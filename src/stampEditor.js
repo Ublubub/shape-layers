@@ -6,7 +6,7 @@ import { parseState, formatState, shapeFamily, stateColor, stateLabel } from './
 import { stateGeometry } from './blockShapes.js';
 import { drawLayer, DARK_THEME, LIGHT_THEME } from './layerView.js';
 import { buildBlockGroup, disposeBlockGroup } from './blockView.js';
-import { key, stampToVoxels, rotateStamp, newStamp } from './stampData.js';
+import { key, stampToVoxels, rotateStamp, newStamp, isDense, blockCount, forEachBlock, SMALL_LIMIT } from './stampData.js';
 
 // Blocks offered in the picker (any other block can be typed in the state box).
 const EXTRA = [
@@ -91,6 +91,10 @@ export class StampEditor {
   get state() { return document.getElementById('se-state').value.trim() || this.base; }
 
   open(stamp) {
+    if (stamp && isDense(stamp)) {
+      alert(`"${stamp.name}" has ${blockCount(stamp).toLocaleString()} blocks, too many to paint by hand. Use ✂ (cut out a piece) to make a smaller stamp you can edit.`);
+      return;
+    }
     this.stamp = JSON.parse(JSON.stringify(stamp || newStamp('New stamp', [3, 6, 3])));
     this.history = [];
     this.layer = 0;
@@ -321,13 +325,21 @@ export class StampEditor {
 // Mesh geometry of a stamp for the design view: blocks with vertex colors, `unit` design
 // units per block, x/z centered on the origin, base at y = 0.
 export function stampGeometry(stamp, unit) {
-  const [W, , D] = stamp.size;
+  const [W, H, D] = stamp.size;
+  if (blockCount(stamp) > SMALL_LIMIT) {
+    // big import: a light box in the design view (turn on "Show blocks" to see every block)
+    const g = new THREE.BoxGeometry(W * unit, H * unit, D * unit).translate(0, (H * unit) / 2, 0).toNonIndexed();
+    g.deleteAttribute('uv');
+    g.setAttribute('color', new THREE.BufferAttribute(new Float32Array(g.attributes.position.count * 3).fill(0.72), 3));
+    return g;
+  }
   const parts = [];
   const col = new THREE.Color();
-  for (const [k, st] of Object.entries(stamp.blocks)) {
+  const list = [];
+  forEachBlock(stamp, (x, y, z, st) => list.push([x, y, z, st]));
+  for (const [x, y, z, st] of list) {
     const src = stateGeometry(st);
     if (!src.attributes.position) continue;
-    const [x, y, z] = k.split(',').map(Number);
     const g = src.index ? src.toNonIndexed() : src.clone();
     for (const name of Object.keys(g.attributes)) if (!['position', 'normal'].includes(name)) g.deleteAttribute(name);
     g.translate(x + 0.5 - W / 2, y + 0.5, z + 0.5 - D / 2);

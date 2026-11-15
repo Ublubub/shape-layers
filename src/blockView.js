@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { BLOCKS, FULL, BOTTOM, TOP, STAIR, CUSTOM, blockLabel } from './blocks.js';
 import { maskGeometry, stateGeometry } from './blockShapes.js';
-import { stateColor, stateLabel } from './blockstates.js';
+import { stateColor, stateLabel, stateMask, parseState } from './blockstates.js';
 
 // "Color by shape" palette: each kind of piece gets its own clearly different color.
 export const SHAPE_COLORS = {
@@ -49,7 +49,10 @@ export function buildBlockGroup(v, { maxLayer = v.H - 1, dimBelow = -1, material
   const group = new THREE.Group();
   const { W, D, kind, mat, meta } = v;
   const WD = W * D, top = maxLayer;
-  const isFull = (i) => kind[i] === FULL;
+  // cube-shaped, non-see-through stamp blocks hide what is behind them, like full blocks
+  const seeThrough = /glass|leaves|ice|bars|_pane|scaffolding|grate|slime|honey/;
+  const solidCustom = (v.custom || []).map((st) => stateMask(st) === 0xff && !seeThrough.test(parseState(st).name));
+  const isFull = (i) => kind[i] === FULL || (kind[i] === CUSTOM && solidCustom[meta[i]]);
   const buckets = new Map(); // geometry key -> { geo, list }
   const add = (key, geoFn, i) => {
     let b = buckets.get(key);
@@ -62,6 +65,9 @@ export function buildBlockGroup(v, { maxLayer = v.H - 1, dimBelow = -1, material
         const i = x + z * W + y * WD;
         const k = kind[i];
         if (!k) continue;
+        const hideable = k === FULL || (k === CUSTOM && solidCustom[meta[i]]);
+        if (hideable && x > 0 && x < W - 1 && z > 0 && z < D - 1 && y > 0 && y < top &&
+            isFull(i - 1) && isFull(i + 1) && isFull(i - W) && isFull(i + W) && isFull(i - WD) && isFull(i + WD)) continue;
         if (k === FULL) {
           // skip fully hidden blocks
           if (x > 0 && x < W - 1 && z > 0 && z < D - 1 && y > 0 && y < top &&

@@ -4,7 +4,10 @@ import { TransformControls } from 'three/addons/controls/TransformControls.js';
 import { SHAPE_TYPES, typeDef, defaultParams, voxelParams, buildGeometry, geometryKey, isSharedGeometry } from './shapes.js';
 import { BLOCKS, blockIndex } from './blocks.js';
 import { StampEditor, stampGeometry } from './stampEditor.js';
-import { pillarTemplate, stampCells, stampFromFile, newStamp } from './stampData.js';
+import { pillarTemplate, stampCells, stampFromFile, newStamp, blockCount, isDense, cropStamp, paletteFromStamp, stampToVoxels, SMALL_LIMIT } from './stampData.js';
+import { idbGet, idbSet } from './store.js';
+import { forEachBlock as cropForEach } from './stampData.js';
+import { Preview3D } from './stampEditor.js';
 import { stateColor } from './blockstates.js';
 import { WallEditor } from './wallEditor.js';
 import { PillarBuilder } from './pillarBuilder.js';
@@ -420,7 +423,7 @@ function addStampCells(job) {
   const custom = [], index = new Map();
   const palette = (st) => {
     let i = index.get(st);
-    if (i === undefined) { i = Math.min(255, custom.length); if (custom.length < 256) custom.push(st); index.set(st, i); }
+    if (i === undefined) { i = Math.min(65535, custom.length); if (custom.length < 65536) custom.push(st); index.set(st, i); }
     return i;
   };
   const grid = { origin: job.origin, cell: job.cell, dims: job.dims };
@@ -1209,7 +1212,7 @@ function loop() {
 
 // ---------------------------------------------------------------- history & storage
 let history = [], hIndex = -1;
-const snapshot = () => JSON.stringify({ shapes, settings, stamps, palettes, profiles });
+const snapshot = () => JSON.stringify({ shapes, settings, palettes, profiles, stampRevs: stamps.map((t) => t.id + ':' + (t.rev || 0)) });
 
 function commit() {
   const s = snapshot();
@@ -1227,7 +1230,7 @@ function commit() {
 function restore(json) {
   const d = JSON.parse(json);
   shapes = d.shapes; settings = { ...defaultSettings(), ...d.settings };
-  stamps = d.stamps || [];
+  if (d.stamps) stamps = d.stamps;
   palettes = d.palettes || clonePresets(); profiles = d.profiles || []; palRev++;
   renderStampList();
   nextId = shapes.reduce((m, s) => Math.max(m, s.id), 0) + 1;
@@ -1237,8 +1240,14 @@ function restore(json) {
 function undo() { if (hIndex > 0) { hIndex--; restore(history[hIndex]); } }
 function redo() { if (hIndex < history.length - 1) { hIndex++; restore(history[hIndex]); } }
 
+let saveTimer = 0;
 function save() {
-  try { localStorage.setItem(STORAGE_KEY, JSON.stringify({ version: 3, shapes, settings, stamps, palettes, profiles, built: [...built] })); } catch { /* storage unavailable */ }
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => {
+    const json = JSON.stringify({ version: 3, shapes, settings, stamps, palettes, profiles, built: [...built] });
+    idbSet('project', json);
+    try { if (json.length < 2_000_000) localStorage.setItem(STORAGE_KEY, json); else localStorage.removeItem(STORAGE_KEY); } catch { /* storage full or unavailable */ }
+  }, 300);
 }
 
 function loadProject(d) {
@@ -1363,6 +1372,8 @@ function renderStampList() {
       <button class="icon-btn" data-act="place" title="Place in the scene">＋</button>
       ${st.gen ? '<button class="icon-btn" data-act="gen" title="Change settings in the pillar builder (replaces hand edits)">⚙</button>' : ''}
       <button class="icon-btn" data-act="edit" title="Edit blocks">✎</button>
+      <button class="icon-btn" data-act="crop" title="Cut out a piece / learn a palette from it">✂</button>
+      <button class="icon-btn" data-act="star" title="Keep in your library (available in every project)">★</button>
       <button class="icon-btn" data-act="del" title="Delete stamp">✕</button>`;
     li.querySelector('.nm').textContent = st.name;
     li.onclick = (e) => {
@@ -1371,9 +1382,13 @@ function renderStampList() {
       else if (act === 'edit') editStamp(st.id);
       else if (act === 'gen') pillarBuilder.open(st);
       else if (act === 'del') deleteStamp(st.id);
+      else if (act === 'crop') openCrop(st);
+      else if (act === 'star') addToLibrary(st);
     };
+    if (blockCount(st) > SMALL_LIMIT) li.querySelector('small').textContent = `${st.size.join('×')} · ${Math.round(blockCount(st) / 1000)}k`;
     ul.appendChild(li);
   }
+  renderLibrary();
   // keep the hall builder's pillar choice in sync
   const sel = $('hall-form') && $('hall-form').elements.pillarStyle;
   if (sel) {
@@ -1458,10 +1473,152 @@ function initStamps() {
   $('btn-stamp-import').onclick = () => $('stamp-file').click();
   $('stamp-file').onchange = async (e) => {
     const f = e.target.files[0]; if (!f) return;
-    try { stampEditor.open(await stampFromFile(f)); } catch (err) { alert('Could not import: ' + err.message); }
     e.target.value = '';
+    $('help').textContent = `Reading ${f.name}…`;
+    try {
+      const st = await stampFromFile(f);
+      importBuild(st);
+    } catch (err) { alert('Could not import: ' + err.message); }
   };
+  $('btn-import-build').onclick = () => $('stamp-file').click();
+  initCrop();
   renderStampList();
+}
+
+// ---------------------------------------------------------------- imports, cut-outs, library
+// Small pieces open in the stamp editor; whole builds are placed in the scene as an
+// "Imported" part, so new parts (roofs, wings...) can be designed to fit them exactly.
+function importBuild(st) {
+  const n = blockCount(st);
+  if (n <= 400 && !isDense(st)) { stampEditor.open(st); return; }
+  stamps.push(st);
+  const s = placeStamp(st.id, { silent: true, group: 'Imported', name: st.name, position: [Math.round(orbit.target.x), 0, Math.round(orbit.target.z)] });
+  renderStampList();
+  if (n > SMALL_LIMIT) setOverlay(true); // big imports show as a box until blocks are shown
+  setView('design');
+  select(s.id);
+  commit();
+  frameDesign();
+  $('help').textContent = `Imported "${st.name}": ${n.toLocaleString()} blocks, ${st.size.join(' × ')}. Use ✂ in Stamps to cut pieces out of it.`;
+}
+
+let library = { stamps: [], palettes: [] };
+async function loadLibrary() {
+  const lib = await idbGet('library');
+  if (lib) library = { stamps: lib.stamps || [], palettes: lib.palettes || [] };
+  // library palettes are available in every project
+  for (const p of library.palettes) if (!palettes.some((q) => q.id === p.id)) palettes.push(JSON.parse(JSON.stringify(p)));
+}
+function saveLibrary() { idbSet('library', JSON.parse(JSON.stringify(library))); }
+function addToLibrary(st) {
+  const copy = JSON.parse(JSON.stringify(st));
+  copy.libId = 'lib' + Date.now().toString(36);
+  library.stamps = library.stamps.filter((t) => !(t.name === st.name && t.rev === st.rev));
+  library.stamps.push(copy);
+  saveLibrary(); renderLibrary();
+  $('help').textContent = `"${st.name}" is now in your library, available in every project.`;
+}
+function addPaletteToLibrary(p) {
+  library.palettes = library.palettes.filter((q) => q.id !== p.id);
+  library.palettes.push(JSON.parse(JSON.stringify(p)));
+  saveLibrary();
+}
+function renderLibrary() {
+  const ul = $('library-list');
+  if (!ul) return;
+  ul.innerHTML = '';
+  if (!library.stamps.length) { ul.innerHTML = '<li class="empty">Press ★ on a stamp to keep it here for every project.</li>'; return; }
+  library.stamps.forEach((t, i) => {
+    const li = document.createElement('li');
+    li.innerHTML = `<span class="nm"></span><small>${t.size.join('×')}</small>
+      <button class="icon-btn" data-act="use" title="Add to this project and place it">＋</button>
+      <button class="icon-btn" data-act="del" title="Remove from library">✕</button>`;
+    li.querySelector('.nm').textContent = t.name;
+    li.onclick = (e) => {
+      const act = e.target.dataset && e.target.dataset.act;
+      if (act === 'use') {
+        const st = JSON.parse(JSON.stringify(t));
+        st.id = 'st' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5);
+        delete st.libId;
+        stamps.push(st);
+        renderStampList();
+        placeStamp(st.id);
+      } else if (act === 'del') {
+        library.stamps.splice(i, 1); saveLibrary(); renderLibrary();
+      }
+    };
+    ul.appendChild(li);
+  });
+}
+
+// ---- cut out a piece of a stamp / import, or learn a palette from it
+let crop = null;
+function initCrop() {
+  crop = { dlg: $('crop-dialog'), preview: new Preview3D($('crop-3d')), stamp: null, box: null };
+  const ids = ['x0', 'x1', 'y0', 'y1', 'z0', 'z1'];
+  for (const id of ids) $('crop-' + id).addEventListener('input', () => updateCrop());
+  crop.dlg.addEventListener('close', () => crop.preview.stop());
+  $('crop-cancel').onclick = () => crop.dlg.close();
+  $('crop-save').onclick = () => {
+    const b = cropBox();
+    const piece = cropStamp(crop.stamp, b, $('crop-name').value.trim() || crop.stamp.name + ' piece');
+    if (!blockCount(piece)) { alert('The selected box is empty.'); return; }
+    stamps.push(piece);
+    crop.dlg.close();
+    renderStampList(); commit();
+    if (!isDense(piece)) stampEditor.open(piece);
+    $('help').textContent = `Saved "${piece.name}" (${blockCount(piece)} blocks) as a stamp.`;
+  };
+  $('crop-palette').onclick = () => {
+    const p = paletteFromStamp(crop.stamp, cropBox(), { name: $('crop-name').value.trim() || crop.stamp.name + ' palette', fullOnly: $('crop-full').checked });
+    if (!p.entries.length) { alert('No full blocks in the selected box.'); return; }
+    palettes.push(p);
+    addPaletteToLibrary(p);
+    palRev++;
+    commit();
+    $('crop-msg').textContent = `Palette "${p.name}" created from ${p.entries.length} block types. Use it in the 🧱 Wall builder (it's in your library too).`;
+  };
+}
+function cropBox() {
+  const v = (id) => Math.round(+$('crop-' + id).value || 0);
+  const [W, H, D] = crop.stamp.size;
+  const c = (a, max) => Math.max(0, Math.min(max - 1, a));
+  const x0 = c(Math.min(v('x0'), v('x1')), W), x1 = c(Math.max(v('x0'), v('x1')), W);
+  const y0 = c(Math.min(v('y0'), v('y1')), H), y1 = c(Math.max(v('y0'), v('y1')), H);
+  const z0 = c(Math.min(v('z0'), v('z1')), D), z1 = c(Math.max(v('z0'), v('z1')), D);
+  return [x0, y0, z0, x1, y1, z1];
+}
+function openCrop(st) {
+  crop.stamp = st;
+  const [W, H, D] = st.size;
+  const set = (id, max, val) => { const el = $('crop-' + id); el.max = max - 1; el.value = val; };
+  set('x0', W, 0); set('x1', W, W - 1); set('y0', H, 0); set('y1', H, H - 1); set('z0', D, 0); set('z1', D, D - 1);
+  $('crop-name').value = st.name + ' piece';
+  $('crop-msg').textContent = '';
+  $('crop-title').textContent = `✂ Cut out of "${st.name}" (${W} × ${H} × ${D})`;
+  crop.dlg.showModal();
+  crop.preview.show(stampToVoxels(st), true);
+  if (!crop.box) {
+    crop.box = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.BoxGeometry(1, 1, 1)), new THREE.LineBasicMaterial({ color: 0xffd43b }));
+    crop.preview.scene.add(crop.box);
+  }
+  crop.preview.start();
+  updateCrop();
+}
+function updateCrop() {
+  const [x0, y0, z0, x1, y1, z1] = cropBox();
+  const [W, , D] = crop.stamp.size;
+  crop.box.scale.set(x1 - x0 + 1.04, y1 - y0 + 1.04, z1 - z0 + 1.04);
+  crop.box.position.set((x0 + x1 + 1) / 2 - W / 2, (y0 + y1 + 1) / 2, (z0 + z1 + 1) / 2 - D / 2);
+  ['x0', 'x1', 'y0', 'y1', 'z0', 'z1'].forEach((id) => { $('crop-' + id + '-out').textContent = $('crop-' + id).value; });
+  let n = 0;
+  forEachInBox(crop.stamp, [x0, y0, z0, x1, y1, z1], () => n++);
+  $('crop-count').textContent = `Selection: ${x1 - x0 + 1} × ${y1 - y0 + 1} × ${z1 - z0 + 1} · ${n.toLocaleString()} blocks`;
+}
+function forEachInBox(st, [x0, y0, z0, x1, y1, z1], fn) {
+  // count with the stamp's own iterator (fast enough even for big imports)
+  const voxBox = (x, y, z) => x >= x0 && x <= x1 && y >= y0 && y <= y1 && z >= z0 && z <= z1;
+  cropForEach(st, (x, y, z, s) => { if (voxBox(x, y, z)) fn(x, y, z, s); });
 }
 
 // ---------------------------------------------------------------- hall builder
@@ -1676,17 +1833,18 @@ function initKeys() {
 }
 
 // ---------------------------------------------------------------- boot
-(function boot() {
+(async function boot() {
   let theme = null;
   try { theme = localStorage.getItem('shape-layers:theme'); } catch { /* ignore */ }
   applyTheme(theme || (matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark'));
 
   let loaded = false;
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
+    const raw = (await idbGet('project')) || localStorage.getItem(STORAGE_KEY);
     if (raw) { loadProject(JSON.parse(raw)); loaded = true; }
   } catch { /* fall back to default */ }
   if (!loaded) defaultProject();
+  await loadLibrary();
 
   renderShapeButtons();
   initProps(); initSettings(); initLayers(); initViews(); initFile(); initKeys(); initHall(); initStamps(); initUX();

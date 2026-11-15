@@ -57,6 +57,25 @@ Shortcuts: `1/2/3` switch views · `W/E/R` gizmo · `F` frame · `Del` delete ·
 
 Your project autosaves in the browser. **Save** / **Open** use a `.json` file.
 
+## Bringing builds in from Minecraft
+
+You can import your own builds and design around them, cut pieces out of them, and learn block palettes from them. Supported files:
+
+| Mod / tool | How to save the area | File |
+|---|---|---|
+| **WorldEdit** | Select two corners (`//pos1` and `//pos2`, or the wand), then `//copy` and `//schem save myhall`. Singleplayer saves to `.minecraft/config/worldedit/schematics/`; on a server it's `plugins/WorldEdit/schematics/`. | `.schem` |
+| **Litematica** | Make an *Area Selection* around the build, then *Save Schematic*. Saved to `.minecraft/schematics/`. | `.litematic` |
+| **Structure block** (vanilla) | Save mode, up to 48×48×48. Saved to `saves/<world>/generated/minecraft/structures/`. | `.nbt` |
+
+Then use **⇪ Import from Minecraft** (Builders tab) or **⇪ Import** (Stamps tab):
+
+- **Small pieces** open in the stamp editor.
+- **Whole builds** are placed in the scene as an *Imported* part, so you can design new parts (a roof, a wing, a crossing) that fit your build exactly, then export only what you need.
+- **✂ Cut out** (in the Stamps list): move a box around a pillar, window or arch and save it as its own stamp. Or press **🎨 Make palette**: the block mix in the box becomes a palette, and the difference between its lower and upper half becomes the gradient. Your real worn wall becomes a reusable style for the wall builder.
+- **★ Library**: stamps and learned palettes you keep are available in every project. Import your best builds, keep the best pieces, and your library grows over time.
+
+**How big can an import be?** Up to 512 blocks per side and 16 million cells, and up to 65,535 different block states. A hall of 100,000 blocks or a facade of a few hundred thousand is fine. A whole world is not: worlds are gigabytes of terrain. Select the area you care about instead. Projects are saved in the browser's IndexedDB, so large imports survive a reload. Use **File → Save** to keep a copy as a file.
+
 ## How it works
 
 1. **Every shape is a "unit primitive"** that fits inside the cube `[-0.5, 0.5]³` in its own local space. Each one has a cheap *inside test*, e.g. for a sphere `x²+y²+z² ≤ 0.25` (see `src/voxelizer.js`).

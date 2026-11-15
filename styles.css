@@ -409,3 +409,12 @@ details.sub > summary:hover { color: var(--text); }
 .w-foot { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; }
 .w-foot .muted { margin: 0; font-size: 12px; }
 @media (max-width: 640px) { .w-steps, .w-start { grid-template-columns: 1fr; } }
+
+/* --- import / crop / library --- */
+#crop-3d { width: 100%; height: 380px; border: 1px solid var(--border); border-radius: 6px; }
+.crop-form { display: flex; flex-direction: column; gap: 6px; }
+.crop-axis { display: grid; grid-template-columns: 14px 1fr 30px 1fr 30px; gap: 6px; align-items: center; }
+.crop-axis span { color: var(--muted); font-weight: 600; }
+.crop-axis output { font-variant-numeric: tabular-nums; color: var(--muted); font-size: 12px; }
+.crop-msg { color: var(--accent); font-size: 12.5px; min-height: 1.2em; margin: 0; }
+.muted-s { color: var(--muted); font-weight: 400; text-transform: none; letter-spacing: 0; }

@@ -64,6 +64,7 @@
           <button class="card" id="btn-hall"><b>🏛 Hall</b><small>Pillars, walls and an arched roof in one go. A great place to start.</small></button>
           <button class="card" id="btn-wall"><b>🧱 Wall</b><small>Walls with depth (plinth, panels, beams) and mixed, worn blocks.</small></button>
           <button class="card" id="btn-pillar"><b>🗿 Pillar</b><small>Detailed pillars: stair bases, trapdoor wraps, bands, capitals.</small></button>
+          <button class="card" id="btn-import-build"><b>⇪ Import from Minecraft</b><small>Bring in a build you made (.schem, .litematic, .nbt) and design around it.</small></button>
         </div>
         <div class="add-pane" data-addpane="shapes" hidden>
           <p class="pane-hint">Basic shapes you can move, stretch and combine. Set one to <b>Carve</b> to cut a hole (doors, hollow towers).</p>
@@ -74,10 +75,12 @@
           <div class="btn-row stamp-btns">
             <button id="btn-stamp-pillar" title="Start from a pillar with a stair base, trapdoors and a capital">🏛 Pillar template</button>
             <button id="btn-stamp-new" title="Blank stamp">＋ New</button>
-            <button id="btn-stamp-import" title="Import a .schem (WorldEdit) or .nbt (structure block) file">⇪ Import</button>
+            <button id="btn-stamp-import" title="Import a .schem (WorldEdit), .litematic (Litematica) or .nbt (structure block) file">⇪ Import</button>
           </div>
           <ul class="shape-list stamp-list" id="stamp-list"></ul>
-          <input type="file" id="stamp-file" accept=".schem,.schematic,.nbt" hidden />
+          <div class="sub-h">★ Your library <span class="muted-s">(every project)</span></div>
+          <ul class="shape-list stamp-list" id="library-list"></ul>
+          <input type="file" id="stamp-file" accept=".schem,.schematic,.nbt,.litematic" hidden />
         </div>
       </section>
       <section class="grow">
@@ -400,6 +403,28 @@
       <button id="pb-cancel" type="button">Cancel</button>
       <button id="pb-edit" type="button" title="Create and open in the stamp editor for hand edits">Create &amp; edit blocks</button>
       <button id="pb-create" type="button" class="primary">Create stamp</button>
+    </div>
+  </dialog>
+
+  <dialog id="crop-dialog" class="pillar-dialog crop-dialog">
+    <h3 id="crop-title">✂ Cut out a piece</h3>
+    <p class="muted">Move the yellow box around the part you like (a pillar, a window, an arch…). Save it as its own stamp, or turn its blocks into a palette for the wall builder.</p>
+    <div class="pb-body">
+      <div class="crop-form">
+        <div class="crop-axis"><span>x</span><input id="crop-x0" type="range" min="0" step="1" /><output id="crop-x0-out"></output><input id="crop-x1" type="range" min="0" step="1" /><output id="crop-x1-out"></output></div>
+        <div class="crop-axis"><span>y</span><input id="crop-y0" type="range" min="0" step="1" /><output id="crop-y0-out"></output><input id="crop-y1" type="range" min="0" step="1" /><output id="crop-y1-out"></output></div>
+        <div class="crop-axis"><span>z</span><input id="crop-z0" type="range" min="0" step="1" /><output id="crop-z0-out"></output><input id="crop-z1" type="range" min="0" step="1" /><output id="crop-z1-out"></output></div>
+        <p class="muted" id="crop-count"></p>
+        <label class="row"><span>Name</span><input id="crop-name" type="text" /></label>
+        <label class="chk" title="Palettes for walls usually want only full cube blocks (no stairs, slabs, trapdoors)"><input id="crop-full" type="checkbox" checked /> Palette: full blocks only</label>
+        <p class="crop-msg" id="crop-msg"></p>
+      </div>
+      <div class="pb-3d-wrap"><canvas id="crop-3d"></canvas></div>
+    </div>
+    <div class="btn-row se-foot">
+      <button id="crop-cancel" type="button">Close</button>
+      <button id="crop-palette" type="button" title="Count the blocks in the box; their mix (and how it changes from bottom to top) becomes a palette">🎨 Make palette</button>
+      <button id="crop-save" type="button" class="primary">✂ Save piece as stamp</button>
     </div>
   </dialog>
 

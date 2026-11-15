@@ -136,7 +136,7 @@ export function voxelize(job, onProgress) {
   const total = W * H * D;
   const kind = new Uint8Array(total);
   const mat = new Uint8Array(total);
-  const meta = new Uint8Array(total);
+  const meta = new Uint16Array(total); // stair mask, or index into `custom` for stamp blocks
   const counts = new Float64Array(Math.max(1, opt.materialCount));
   const oct = new Int32Array(8);
 
