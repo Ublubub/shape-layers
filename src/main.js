@@ -6,6 +6,10 @@ import { BLOCKS, blockIndex } from './blocks.js';
 import { StampEditor, stampGeometry } from './stampEditor.js';
 import { pillarTemplate, stampCells, stampFromFile, newStamp } from './stampData.js';
 import { stateColor } from './blockstates.js';
+import { WallEditor } from './wallEditor.js';
+import { PillarBuilder } from './pillarBuilder.js';
+import { newWall, wallToStamp, PRESET_PROFILES } from './wallData.js';
+import { clonePresets } from './palettes.js';
 import { summarize } from './voxelizer.js';
 import { LayerView, drawLayer, drawSection, viewDims, LIGHT_THEME } from './layerView.js';
 import { BlockView, buildBlockGroup, disposeBlockGroup } from './blockView.js';
@@ -18,7 +22,7 @@ const DEG = Math.PI / 180;
 
 // ---------------------------------------------------------------- state
 const defaultSettings = () => ({
-  bpu: 2, stretch: [1, 1, 1], keepProp: true,
+  bpu: 1, stretch: [1, 1, 1], keepProp: true,
   slabs: true, topSlabs: true, stairs: true, stairCorners: true, hollow: false, threshold: 0.5, quality: 'normal', auto: true,
 });
 const defaultRepeat = () => ({ count: 1, axis: 'z', spacing: 6 });
@@ -35,6 +39,29 @@ let layer = 0;
 let stamps = [];          // stamp library (part of the project)
 let overlayOn = false;    // show converted blocks over the shapes in Design view
 let overlayGroup = null;
+let palettes = clonePresets(); // block palettes with gradients (part of the project)
+let profiles = [];             // saved wall styles (part of the project)
+let soloGroup = null;          // show/convert only this part (not saved)
+let selectedGroup = null;      // part selected for moving as a whole
+const collapsed = new Set();   // collapsed parts in the list (UI only)
+let palRev = 0;                // bumps when palettes change so walls regenerate
+
+// Stamps and walls are block-exact: they are pasted block-for-block instead of converted.
+const isExact = (s) => s.type === 'stamp' || s.type === 'wall';
+// shape is shown and converted (visible, and in the solo part if one is soloed)
+const active = (s) => s.visible && (!soloGroup || (s.group || '') === soloGroup);
+const wallCache = new Map();
+function exactStamp(s) {
+  if (s.type === 'stamp') return stampById(s.stampId);
+  const k = JSON.stringify(s.wall) + '|' + palRev;
+  const c = wallCache.get(s.id);
+  if (c && c.k === k) return c.st;
+  const st = wallToStamp(s.wall, palettes);
+  st.rev = k;
+  wallCache.set(s.id, { k, st });
+  return st;
+}
+const exactKey = (s) => (s.type === 'stamp' ? `${s.stampId}|${(stampById(s.stampId) || {}).rev}` : `wall|${s.id}|${JSON.stringify(s.wall)}|${palRev}`);
 
 const stampById = (id) => stamps.find((t) => t.id === id) || null;
 // design units per block (stamps are block-exact, so they need this to size their mesh)
@@ -52,11 +79,11 @@ function makeShape(type, over = {}) {
 
 function defaultProject() {
   nextId = 1; shapes = [];
-  shapes.push(makeShape('cylinder', { name: 'Tower', material: 'stone_bricks', position: [0, 5, 0], scale: [6, 10, 6] }));
-  shapes.push(makeShape('dome', { name: 'Roof', material: 'spruce', position: [0, 12.5, 0], scale: [8, 5, 8] }));
-  shapes.push(makeShape('torus', { name: 'Ring', material: 'smooth_stone', position: [0, 9.6, 0], scale: [7.6, 7.6, 7.6] }));
-  shapes.push(makeShape('cylinder', { name: 'Hollow inside', mode: 'sub', position: [0, 5.5, 0], scale: [4.4, 9, 4.4] }));
-  shapes.push(makeShape('box', { name: 'Door', mode: 'sub', position: [0, 1.5, 3], scale: [2, 3, 2.5] }));
+  shapes.push(makeShape('cylinder', { name: 'Tower', material: 'stone_bricks', position: [0, 10, 0], scale: [12, 20, 12] }));
+  shapes.push(makeShape('dome', { name: 'Roof', material: 'spruce', position: [0, 25, 0], scale: [16, 10, 16] }));
+  shapes.push(makeShape('torus', { name: 'Ring', material: 'smooth_stone', position: [0, 19.2, 0], scale: [15.2, 15.2, 15.2] }));
+  shapes.push(makeShape('cylinder', { name: 'Hollow inside', mode: 'sub', position: [0, 11, 0], scale: [8.8, 18, 8.8] }));
+  shapes.push(makeShape('box', { name: 'Door', mode: 'sub', position: [0, 3, 6], scale: [4, 6, 5] }));
   settings = defaultSettings();
   built = new Set();
 }
@@ -98,10 +125,11 @@ tc.setTranslationSnap(0.5); tc.setRotationSnap(15 * DEG); tc.setScaleSnap(0.25);
 scene.add(tc);
 tc.addEventListener('dragging-changed', (e) => { orbit.enabled = !e.value; });
 tc.addEventListener('objectChange', () => {
+  if (selectedGroup) { moveGroupFromPivot(); return; }
   const s = selected();
   if (!s) return;
   readMesh(s);
-  if (tc.mode === 'scale' && dragStart && s.rotation[0] === 0 && s.rotation[2] === 0 && s.type !== 'stamp') {
+  if (tc.mode === 'scale' && dragStart && s.rotation[0] === 0 && s.rotation[2] === 0 && !isExact(s)) {
     s.position[1] = Math.round((dragStart.base + Math.abs(s.scale[1]) / 2) * 1000) / 1000;
     meshes.get(s.id).position.y = s.position[1];
     syncMesh(s);
@@ -156,11 +184,11 @@ function repeatOffsets(s) {
 function syncMesh(s) {
   const mesh = meshes.get(s.id);
   if (!mesh) return;
-  const stamp = s.type === 'stamp' ? stampById(s.stampId) : null;
-  const key = s.type === 'stamp' ? `stamp|${s.stampId}|${stamp ? stamp.rev : 'x'}|${stampUnit()}` : geometryKey(s);
+  const stamp = isExact(s) ? exactStamp(s) : null;
+  const key = isExact(s) ? `exact|${exactKey(s)}|${stampUnit()}` : geometryKey(s);
   if (mesh.userData.geoKey !== key) {
     if (mesh.userData.geoKey && !isSharedGeometry(mesh.geometry)) mesh.geometry.dispose();
-    mesh.geometry = s.type === 'stamp'
+    mesh.geometry = isExact(s)
       ? stampGeometry(stamp || { size: [1, 1, 1], blocks: {} }, stampUnit())
       : buildGeometry(s);
     mesh.userData.edges.geometry.dispose();
@@ -171,15 +199,15 @@ function syncMesh(s) {
   mesh.position.fromArray(s.position);
   mesh.rotation.set(s.rotation[0] * DEG, s.rotation[1] * DEG, s.rotation[2] * DEG);
   mesh.scale.fromArray(s.scale);
-  mesh.visible = s.visible;
+  mesh.visible = active(s);
   const m = mesh.material, e = mesh.userData.edges.material;
-  const sel = s.id === selectedId;
+  const sel = s.id === selectedId || (!!selectedGroup && (s.group || '') === selectedGroup);
   if (s.mode === 'sub') {
     m.color.set(0xff5a5a); m.transparent = true; m.opacity = 0.28; m.depthWrite = false;
     mesh.renderOrder = 2;
     e.color.set(sel ? 0xffc94a : 0xff5a5a); e.opacity = 0.9;
   } else {
-    const isStamp = s.type === 'stamp';
+    const isStamp = isExact(s);
     if (m.vertexColors !== isStamp) { m.vertexColors = isStamp; }
     m.color.set(isStamp ? 0xffffff : BLOCKS[blockIndex(s.material)].color);
     // with the block overlay on, shapes become faint ghosts
@@ -208,7 +236,7 @@ function syncCopies(s, mesh) {
     c.position.set(s.position[0] + o[0], s.position[1] + o[1], s.position[2] + o[2]);
     c.rotation.copy(mesh.rotation);
     c.scale.copy(mesh.scale);
-    c.visible = s.visible;
+    c.visible = active(s);
     c.renderOrder = mesh.renderOrder;
   });
 }
@@ -222,9 +250,9 @@ function shapeMatrices(s) {
 
 function shapeBoxes(s) {
   const mesh = meshes.get(s.id);
-  if (s.type === 'stamp') {
+  if (isExact(s)) {
     // full stamp footprint, even where the outer blocks are thin (trapdoors, lanterns...)
-    const st = stampById(s.stampId), u = stampUnit();
+    const st = exactStamp(s), u = stampUnit();
     const [W, H, D] = st ? st.size : [1, 1, 1];
     const local = new THREE.Box3(new THREE.Vector3(-W / 2 * u, 0, -D / 2 * u), new THREE.Vector3(W / 2 * u, H * u, D / 2 * u));
     return shapeMatrices(s).map((m) => local.clone().applyMatrix4(m));
@@ -245,7 +273,7 @@ function readMesh(s) {
   s.position = mesh.position.toArray().map(r3);
   s.rotation = [mesh.rotation.x, mesh.rotation.y, mesh.rotation.z].map((v) => r3(v / DEG));
   s.scale = mesh.scale.toArray().map(r3);
-  if (s.type === 'stamp') normalizeStamp(s);
+  if (isExact(s)) normalizeStamp(s);
 }
 
 // stamps only turn in 90° steps around y and never stretch
@@ -268,7 +296,7 @@ const selected = () => shapes.find((s) => s.id === selectedId) || null;
 function computeBounds() {
   const box = new THREE.Box3();
   for (const s of shapes) {
-    if (!s.visible || s.mode !== 'add') continue;
+    if (!active(s) || s.mode !== 'add') continue;
     for (const b of shapeBoxes(s)) box.union(b);
   }
   return box;
@@ -353,7 +381,7 @@ function convert() {
     dims,
     origin: box.min.toArray(),
     cell: size.map((v, i) => v / dims[i]),
-    shapes: shapes.filter((s) => s.visible && s.type !== 'stamp').flatMap((s) => {
+    shapes: shapes.filter((s) => active(s) && !isExact(s)).flatMap((s) => {
       const boxes = shapeBoxes(s);
       const params = voxelParams(s);
       return shapeMatrices(s).map((m, i) => {
@@ -399,8 +427,8 @@ function addStampCells(job) {
   const cells = [];
   const v = new THREE.Vector3();
   for (const s of shapes) {
-    if (s.type !== 'stamp' || !s.visible) continue;
-    const st = stampById(s.stampId);
+    if (!isExact(s) || !active(s)) continue;
+    const st = exactStamp(s);
     if (!st) continue;
     const u = stampUnit();
     // three.js +90° about y turns east toward north (counter-clockwise from above)
@@ -494,43 +522,163 @@ function addShape(type) {
   commit();
 }
 
+function shapeRow(s, idx) {
+  const li = document.createElement('li');
+  li.className = (s.id === selectedId ? 'sel ' : '') + (s.visible ? '' : 'hidden-shape ') + (s.group ? 'in-group' : '');
+  const color = s.mode === 'sub' ? 'transparent' : s.type === 'stamp' ? 'linear-gradient(135deg,#7048e8,#b197fc)'
+    : s.type === 'wall' ? 'repeating-linear-gradient(0deg,#8a8a8a 0 3px,#6b6b6b 3px 6px)' : BLOCKS[blockIndex(s.material)].color;
+  const border = s.mode === 'sub' ? 'border:1px dashed var(--sub)' : '';
+  li.innerHTML = `
+    <span class="sw" style="background:${color};${border}"></span>
+    <span class="nm"></span>
+    ${s.mode === 'sub' ? '<span class="badge">carve</span>' : ''}
+    <button class="icon-btn" data-act="up" title="Move up">↑</button>
+    <button class="icon-btn" data-act="down" title="Move down">↓</button>
+    <button class="icon-btn" data-act="vis" title="${s.visible ? 'Hide (excluded from build)' : 'Show'}">${s.visible ? '👁' : '◌'}</button>`;
+  li.querySelector('.nm').textContent = s.name;
+  li.onclick = (e) => {
+    const act = e.target.dataset && e.target.dataset.act;
+    if (act === 'vis') { s.visible = !s.visible; syncMesh(s); renderShapeList(); updateDims(); commit(); return; }
+    if (act === 'up' && idx > 0) { [shapes[idx - 1], shapes[idx]] = [shapes[idx], shapes[idx - 1]]; renderShapeList(); commit(); return; }
+    if (act === 'down' && idx < shapes.length - 1) { [shapes[idx + 1], shapes[idx]] = [shapes[idx], shapes[idx + 1]]; renderShapeList(); commit(); return; }
+    if (!act) select(s.id);
+  };
+  return li;
+}
+
+// The list is grouped into parts (Pillars, Walls, Roof...). Each part can be moved,
+// turned, hidden, duplicated or soloed as a whole — build pieces separately, then combine.
 function renderShapeList() {
   const ul = $('shape-list');
   ul.innerHTML = '';
-  if (!shapes.length) { ul.innerHTML = '<li class="empty">No shapes yet — add one above.</li>'; return; }
-  shapes.forEach((s, idx) => {
+  if (soloGroup) {
     const li = document.createElement('li');
-    li.className = (s.id === selectedId ? 'sel ' : '') + (s.visible ? '' : 'hidden-shape');
-    const color = s.mode === 'sub' ? 'transparent' : s.type === 'stamp' ? 'linear-gradient(135deg,#7048e8,#b197fc)' : BLOCKS[blockIndex(s.material)].color;
-    const border = s.mode === 'sub' ? 'border:1px dashed var(--sub)' : '';
-    li.innerHTML = `
-      <span class="sw" style="background:${color};${border}"></span>
-      <span class="nm"></span>
-      ${s.mode === 'sub' ? '<span class="badge">carve</span>' : ''}
-      <button class="icon-btn" data-act="up" title="Move up">↑</button>
-      <button class="icon-btn" data-act="down" title="Move down">↓</button>
-      <button class="icon-btn" data-act="vis" title="${s.visible ? 'Hide (excluded from build)' : 'Show'}">${s.visible ? '👁' : '◌'}</button>`;
-    li.querySelector('.nm').textContent = s.name;
-    li.onclick = (e) => {
-      const act = e.target.dataset && e.target.dataset.act;
-      if (act === 'vis') { s.visible = !s.visible; syncMesh(s); renderShapeList(); updateDims(); commit(); return; }
-      if (act === 'up' && idx > 0) { [shapes[idx - 1], shapes[idx]] = [shapes[idx], shapes[idx - 1]]; renderShapeList(); commit(); return; }
-      if (act === 'down' && idx < shapes.length - 1) { [shapes[idx + 1], shapes[idx]] = [shapes[idx], shapes[idx + 1]]; renderShapeList(); commit(); return; }
-      if (!act) select(s.id);
-    };
+    li.className = 'solo-banner';
+    li.innerHTML = `◎ Showing only <b></b> <button class="icon-btn" title="Show everything">show all</button>`;
+    li.querySelector('b').textContent = soloGroup || 'ungrouped';
+    li.querySelector('button').onclick = () => setSolo(null);
     ul.appendChild(li);
+  }
+  if (!shapes.length) { ul.insertAdjacentHTML('beforeend', '<li class="empty">No shapes yet. Add one above.</li>'); return; }
+  const order = [], byGroup = new Map();
+  shapes.forEach((s, idx) => {
+    const g = s.group || '';
+    if (!byGroup.has(g)) { byGroup.set(g, []); order.push(g); }
+    byGroup.get(g).push([s, idx]);
   });
+  for (const g of order) {
+    const members = byGroup.get(g);
+    if (g) {
+      const head = document.createElement('li');
+      const anyVisible = members.some(([m]) => m.visible);
+      head.className = 'group-head' + (selectedGroup === g ? ' sel' : '') + (soloGroup === g ? ' solo' : '');
+      head.innerHTML = `<span class="caret">${collapsed.has(g) ? '▸' : '▾'}</span><span class="nm"></span><small>${members.length}</small>
+        <button class="icon-btn" data-gact="move" title="Select the whole part (move it with the gizmo)">✥</button>
+        <button class="icon-btn" data-gact="rot" title="Turn the part 90°">⟳</button>
+        <button class="icon-btn" data-gact="dup" title="Duplicate the part">⧉</button>
+        <button class="icon-btn" data-gact="solo" title="${soloGroup === g ? 'Show everything' : 'Show only this part'}">◎</button>
+        <button class="icon-btn" data-gact="vis" title="${anyVisible ? 'Hide part' : 'Show part'}">${anyVisible ? '👁' : '◌'}</button>`;
+      head.querySelector('.nm').textContent = g;
+      head.onclick = (e) => {
+        const act = e.target.dataset && e.target.dataset.gact;
+        if (act === 'move') selectGroup(g);
+        else if (act === 'rot') rotateGroup(g);
+        else if (act === 'dup') duplicateGroup(g);
+        else if (act === 'solo') setSolo(soloGroup === g ? null : g);
+        else if (act === 'vis') { members.forEach(([m]) => { m.visible = !anyVisible; syncMesh(m); }); renderShapeList(); commit(); }
+        else { if (collapsed.has(g)) collapsed.delete(g); else collapsed.add(g); renderShapeList(); }
+      };
+      ul.appendChild(head);
+      if (collapsed.has(g)) continue;
+    }
+    for (const [m, idx] of members) ul.appendChild(shapeRow(m, idx));
+  }
+  const dl = $('group-list');
+  if (dl) dl.innerHTML = order.filter(Boolean).map((g) => `<option value="${g.replace(/"/g, '&quot;')}"></option>`).join('');
+}
+
+// ---- parts (groups)
+const groupPivot = new THREE.Object3D();
+scene.add(groupPivot);
+let pivotLast = new THREE.Vector3();
+const groupMembers = (g) => shapes.filter((s) => (s.group || '') === g);
+function groupBox(g) {
+  const box = new THREE.Box3();
+  for (const s of groupMembers(g)) for (const b of shapeBoxes(s)) box.union(b);
+  return box;
+}
+function selectGroup(g) {
+  selectedId = null;
+  selectedGroup = g;
+  shapes.forEach(syncMesh);
+  const box = groupBox(g);
+  if (!box.isEmpty()) box.getCenter(groupPivot.position);
+  pivotLast.copy(groupPivot.position);
+  setGizmo('translate');
+  if (view === 'design') tc.attach(groupPivot);
+  renderShapeList(); fillProps();
+}
+function moveGroupFromPivot() {
+  const d = groupPivot.position.clone().sub(pivotLast);
+  if (!d.lengthSq()) return;
+  for (const s of groupMembers(selectedGroup)) {
+    s.position = s.position.map((v, i) => Math.round((v + d.getComponent(i)) * 1000) / 1000);
+    syncMesh(s);
+  }
+  pivotLast.copy(groupPivot.position);
+  updateDims();
+}
+// Turn a part 90° clockwise (seen from above) around its center, snapped to whole blocks.
+function rotateGroup(g) {
+  const box = groupBox(g);
+  if (box.isEmpty()) return;
+  const u = 1 / settings.bpu;
+  const c = box.getCenter(new THREE.Vector3());
+  c.x = Math.round(c.x / u) * u; c.z = Math.round(c.z / u) * u;
+  for (const s of groupMembers(g)) {
+    const dx = s.position[0] - c.x, dz = s.position[2] - c.z;
+    // clockwise from above: +x (east) -> +z (south)
+    s.position[0] = c.x - dz; s.position[2] = c.z + dx;
+    s.rotation[1] = ((s.rotation[1] - 90) % 360 + 360) % 360;
+    if (s.repeat && s.repeat.axis !== 'y') {
+      // keep repeat rows following the turn
+      if (s.repeat.axis === 'x') s.repeat = { ...s.repeat, axis: 'z' };
+      else s.repeat = { ...s.repeat, axis: 'x', spacing: -s.repeat.spacing };
+    }
+    syncMesh(s);
+  }
+  if (selectedGroup === g) selectGroup(g);
+  renderShapeList(); commit();
+}
+function duplicateGroup(g) {
+  const box = groupBox(g);
+  const shift = box.isEmpty() ? 4 : Math.ceil(box.max.x - box.min.x) + 2;
+  let name = g + ' copy', n = 2;
+  while (shapes.some((s) => s.group === name)) name = `${g} copy ${n++}`;
+  for (const s of groupMembers(g)) {
+    const c = JSON.parse(JSON.stringify(s));
+    c.id = nextId++; c.group = name; c.position[0] += shift;
+    shapes.push(c);
+    buildMesh(c);
+  }
+  renderShapeList(); commit();
+}
+function setSolo(g) {
+  soloGroup = g;
+  shapes.forEach(syncMesh);
+  renderShapeList(); updateDims(); scheduleConvert();
 }
 
 function select(id) {
   const prev = selectedId;
   selectedId = id;
+  if (selectedGroup) { selectedGroup = null; shapes.forEach(syncMesh); }
   for (const s of shapes) if (s.id === prev || s.id === id) syncMesh(s);
   const s = selected();
   if (s && view === 'design') tc.attach(meshes.get(s.id)); else tc.detach();
   const snapOn = $('snap').checked;
-  tc.setRotationSnap(s && s.type === 'stamp' ? 90 * DEG : snapOn ? 15 * DEG : null);
-  if (s && s.type === 'stamp') { tc.showX = tc.mode !== 'rotate'; tc.showZ = tc.mode !== 'rotate'; if (tc.mode === 'scale') setGizmo('translate'); }
+  tc.setRotationSnap(s && isExact(s) ? 90 * DEG : snapOn ? 15 * DEG : null);
+  if (s && isExact(s)) { tc.showX = tc.mode !== 'rotate'; tc.showZ = tc.mode !== 'rotate'; if (tc.mode === 'scale') setGizmo('translate'); }
   else { tc.showX = true; tc.showZ = true; }
   renderShapeList();
   renderParams();
@@ -543,7 +691,7 @@ function renderParams() {
   const s = selected();
   wrap.innerHTML = '';
   wrap.dataset.for = s ? s.id + s.type : '';
-  if (!s || s.type === 'stamp') return;
+  if (!s || isExact(s)) return;
   if (s.type === 'vault') wrap.appendChild(vaultControls(s));
   for (const d of typeDef(s.type).params || []) {
     const row = document.createElement('div');
@@ -695,11 +843,15 @@ function fillProps() {
   if ($('p-params').dataset.for !== s.id + s.type) renderParams();
   const set = (el, v) => { if (document.activeElement !== el) el.value = v; };
   set($('p-name'), s.name);
-  $('props').classList.toggle('is-stamp', s.type === 'stamp');
-  if (s.type === 'stamp') {
-    const st = stampById(s.stampId);
-    $('p-stamp-name').textContent = st ? `${st.name} (${st.size.join(' × ')})` : 'missing stamp';
+  $('props').classList.toggle('is-stamp', isExact(s));
+  if (isExact(s)) {
+    const st = exactStamp(s);
+    $('p-stamp-label').textContent = s.type === 'wall' ? 'Wall' : 'Stamp';
+    $('p-stamp-name').textContent = s.type === 'wall'
+      ? `${s.wall.length} long × ${s.wall.height} high × ${s.wall.profile.depth} deep`
+      : st ? `${st.name} (${st.size.join(' × ')})` : 'missing stamp';
   }
+  set($('p-group'), s.group || '');
   $('p-mode').value = s.mode;
   $('p-mat').value = s.material;
   $('p-mat').disabled = s.mode === 'sub';
@@ -729,7 +881,7 @@ function initProps() {
       if (!Number.isFinite(v)) return;
       if (el.dataset.vec === 'scale' && Math.abs(v) < 0.05) return;
       s[el.dataset.vec][+el.dataset.i] = v;
-      if (s.type === 'stamp') normalizeStamp(s);
+      if (isExact(s)) normalizeStamp(s);
       syncMesh(s); updateDims();
     });
     el.addEventListener('change', () => commit());
@@ -745,7 +897,16 @@ function initProps() {
     $(id).addEventListener('input', repeatInput);
     $(id).addEventListener('change', () => { repeatInput(); commit(); });
   });
-  $('p-edit-stamp').onclick = () => { const s = selected(); if (s && s.type === 'stamp') editStamp(s.stampId); };
+  $('p-edit-stamp').onclick = () => {
+    const s = selected(); if (!s) return;
+    if (s.type === 'stamp') editStamp(s.stampId);
+    if (s.type === 'wall') { wallTarget = s.id; wallEditor.open(s.wall); }
+  };
+  $('p-group').addEventListener('change', (e) => {
+    const s = selected(); if (!s) return;
+    s.group = e.target.value.trim();
+    renderShapeList(); commit();
+  });
   $('p-dup').onclick = () => duplicate(false);
   $('p-mirror').onclick = () => duplicate(true);
   $('p-del').onclick = deleteSelected;
@@ -835,6 +996,7 @@ function initSettings() {
 
 function applySettingsUI() {
   $('bpu').value = settings.bpu;
+  if ($('snap').checked) tc.setTranslationSnap(1 / settings.bpu);
   $('keep-prop').checked = settings.keepProp;
   $('opt-slabs').checked = settings.slabs;
   $('opt-topslabs').checked = settings.topSlabs;
@@ -960,7 +1122,7 @@ function initViews() {
   document.querySelectorAll('[data-gizmo]').forEach((b) => b.onclick = () => setGizmo(b.dataset.gizmo));
   $('snap').onchange = (e) => {
     const on = e.target.checked;
-    tc.setTranslationSnap(on ? 0.5 : null); tc.setRotationSnap(on ? 15 * DEG : null); tc.setScaleSnap(on ? 0.25 : null);
+    tc.setTranslationSnap(on ? 1 / settings.bpu : null); tc.setRotationSnap(on ? 15 * DEG : null); tc.setScaleSnap(on ? 0.25 : null);
   };
   $('show-bounds').onchange = updateDims;
   $('show-blocks').onchange = (e) => setOverlay(e.target.checked);
@@ -1010,9 +1172,9 @@ function initViews() {
 
 function setGizmo(mode) {
   const s = selected();
-  if (s && s.type === 'stamp' && mode === 'scale') mode = 'translate';
+  if (s && isExact(s) && mode === 'scale') mode = 'translate';
   tc.setMode(mode);
-  tc.showX = tc.showZ = !(s && s.type === 'stamp' && mode === 'rotate');
+  tc.showX = tc.showZ = !(s && isExact(s) && mode === 'rotate');
   tc.setSpace(mode === 'translate' ? 'world' : 'local');
   document.querySelectorAll('[data-gizmo]').forEach((b) => b.classList.toggle('active', b.dataset.gizmo === mode));
 }
@@ -1043,7 +1205,7 @@ function loop() {
 
 // ---------------------------------------------------------------- history & storage
 let history = [], hIndex = -1;
-const snapshot = () => JSON.stringify({ shapes, settings, stamps });
+const snapshot = () => JSON.stringify({ shapes, settings, stamps, palettes, profiles });
 
 function commit() {
   const s = snapshot();
@@ -1062,6 +1224,7 @@ function restore(json) {
   const d = JSON.parse(json);
   shapes = d.shapes; settings = { ...defaultSettings(), ...d.settings };
   stamps = d.stamps || [];
+  palettes = d.palettes || clonePresets(); profiles = d.profiles || []; palRev++;
   renderStampList();
   nextId = shapes.reduce((m, s) => Math.max(m, s.id), 0) + 1;
   rebuildMeshes(); migrateFit(); applySettingsUI(); renderShapeList(); fillProps(); updateDims();
@@ -1071,7 +1234,7 @@ function undo() { if (hIndex > 0) { hIndex--; restore(history[hIndex]); } }
 function redo() { if (hIndex < history.length - 1) { hIndex++; restore(history[hIndex]); } }
 
 function save() {
-  try { localStorage.setItem(STORAGE_KEY, JSON.stringify({ version: 2, shapes, settings, stamps, built: [...built] })); } catch { /* storage unavailable */ }
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify({ version: 3, shapes, settings, stamps, palettes, profiles, built: [...built] })); } catch { /* storage unavailable */ }
 }
 
 function loadProject(d) {
@@ -1080,6 +1243,9 @@ function loadProject(d) {
   settings = { ...defaultSettings(), ...(d.settings || {}) };
   built = new Set(d.built || []);
   stamps = Array.isArray(d.stamps) ? d.stamps : [];
+  palettes = Array.isArray(d.palettes) ? d.palettes : clonePresets();
+  profiles = Array.isArray(d.profiles) ? d.profiles : [];
+  palRev++;
   nextId = shapes.reduce((m, s) => Math.max(m, s.id || 0), 0) + 1;
   shapes.forEach((s) => { if (!s.id) s.id = nextId++; });
   selectedId = null;
@@ -1092,7 +1258,7 @@ function initFile() {
     shapes = []; settings = defaultSettings(); built = new Set(); selectedId = null; nextId = 1; lastDims = null;
     rebuildMeshes(); applySettingsUI(); renderShapeList(); fillProps(); setVoxels(null); commit();
   };
-  $('btn-save').onclick = () => download('shape-layers-project.json', JSON.stringify({ version: 2, shapes, settings, stamps, built: [...built] }, null, 2), 'application/json');
+  $('btn-save').onclick = () => download('shape-layers-project.json', JSON.stringify({ version: 3, shapes, settings, stamps, palettes, profiles, built: [...built] }, null, 2), 'application/json');
   $('btn-open').onclick = () => $('file-input').click();
   $('file-input').onchange = async (e) => {
     const f = e.target.files[0]; if (!f) return;
@@ -1191,6 +1357,7 @@ function renderStampList() {
     const li = document.createElement('li');
     li.innerHTML = `<span class="nm"></span><small>${st.size.join('×')}</small>
       <button class="icon-btn" data-act="place" title="Place in the scene">＋</button>
+      ${st.gen ? '<button class="icon-btn" data-act="gen" title="Change settings in the pillar builder (replaces hand edits)">⚙</button>' : ''}
       <button class="icon-btn" data-act="edit" title="Edit blocks">✎</button>
       <button class="icon-btn" data-act="del" title="Delete stamp">✕</button>`;
     li.querySelector('.nm').textContent = st.name;
@@ -1198,6 +1365,7 @@ function renderStampList() {
       const act = e.target.dataset && e.target.dataset.act;
       if (act === 'place') placeStamp(st.id);
       else if (act === 'edit') editStamp(st.id);
+      else if (act === 'gen') pillarBuilder.open(st);
       else if (act === 'del') deleteStamp(st.id);
     };
     ul.appendChild(li);
@@ -1245,8 +1413,42 @@ function onStampSaved(st) {
   renderStampList(); renderShapeList(); fillProps(); commit();
 }
 
+let wallEditor = null, pillarBuilder = null, wallTarget = null;
+
+function wallStyles() { return [...PRESET_PROFILES, ...profiles]; }
+
+function onWallSaved(w) {
+  const existing = shapes.find((s) => s.id === wallTarget && s.type === 'wall');
+  if (existing) {
+    existing.wall = w; existing.name = w.name || existing.name;
+    syncMesh(existing); select(existing.id);
+  } else {
+    const s = {
+      id: nextId++, type: 'wall', name: w.name || 'Wall', wall: w, mode: 'add', material: 'stone', visible: true,
+      position: [Math.round(orbit.target.x), 0, Math.round(orbit.target.z)], rotation: [0, 0, 0], scale: [1, 1, 1],
+      params: {}, repeat: defaultRepeat(), group: 'Walls',
+    };
+    shapes.push(s); buildMesh(s); select(s.id);
+  }
+  wallTarget = null;
+  commit();
+}
+
 function initStamps() {
   stampEditor = new StampEditor(onStampSaved);
+  wallEditor = new WallEditor({
+    onSave: onWallSaved,
+    onSaveStyle: (p) => { profiles.push(p); renderStampList(); commit(); },
+    onPalettes: () => { palRev++; shapes.forEach((s) => { if (s.type === 'wall') syncMesh(s); }); save(); scheduleConvert(); },
+    getPalettes: () => palettes,
+    getProfiles: wallStyles,
+  });
+  pillarBuilder = new PillarBuilder((st, openEditor) => {
+    onStampSaved(st);
+    if (openEditor) stampEditor.open(st);
+  });
+  $('btn-wall').onclick = () => { wallTarget = null; wallEditor.open({ ...newWall(PRESET_PROFILES[0], 12, 9), name: 'Wall' }); };
+  $('btn-pillar').onclick = () => pillarBuilder.open(null);
   $('btn-stamp-new').onclick = () => stampEditor.open(newStamp('New stamp', [3, 6, 3]));
   $('btn-stamp-pillar').onclick = () => stampEditor.open(pillarTemplate(9, 'spruce'));
   $('btn-stamp-import').onclick = () => $('stamp-file').click();
@@ -1283,7 +1485,15 @@ function initHall() {
     const st = stampById(form.elements.pillarStyle.value);
     if (st) { form.elements.height.value = st.size[1]; form.elements.width.value = 1; summary(); }
   });
-  $('btn-hall').onclick = () => { summary(); dlg.showModal(); };
+  $('btn-hall').onclick = () => {
+    const ws = form.elements.wallStyle, cur = ws.value;
+    ws.innerHTML = '<option value="">No walls</option>' + wallStyles().map((p) => `<option value="${p.id}"></option>`).join('');
+    wallStyles().forEach((p, i) => { ws.options[i + 1].textContent = p.name; });
+    // first time: default to the hall wall; afterwards keep the user's choice
+    ws.value = ws.dataset.init && [...ws.options].some((o) => o.value === cur) ? cur : 'hall';
+    ws.dataset.init = '1';
+    summary(); dlg.showModal();
+  };
   dlg.addEventListener('close', () => {
     if (dlg.returnValue !== 'ok') return;
     const across = Math.max(2, Math.round(num('across'))), w = Math.max(1, num('width')), gap = Math.max(0, num('gap'));
@@ -1299,21 +1509,37 @@ function initHall() {
       const stampId = form.elements.pillarStyle.value;
       if (stampById(stampId)) {
         // stamp centered on the pillar's column
-        const p = placeStamp(stampId, { silent: true, name: `Pillar row ${i + 1}`, position: [x, 0, w / 2], repeat: { count: along, axis: 'z', spacing: every } });
+        const p = placeStamp(stampId, { silent: true, group: 'Pillars', name: `Pillar row ${i + 1}`, position: [x, 0, w / 2], repeat: { count: along, axis: 'z', spacing: every } });
         pillarIds.push(p.id);
         continue;
       }
       const p = makeShape('box', {
         name: `Pillar row ${i + 1}`, material: form.elements.pillarMat.value,
-        position: [x, height / 2, w / 2], scale: [w, height, w],
+        position: [x, height / 2, w / 2], scale: [w, height, w], group: 'Pillars',
         repeat: { count: along, axis: 'z', spacing: every },
       });
       shapes.push(p); pillarIds.push(p.id);
     }
+    // side walls behind the outer pillars (front face flush with the outer column faces)
+    const style = wallStyles().find((p) => p.id === form.elements.wallStyle.value);
+    let wallDepth = 0;
+    if (style) {
+      wallDepth = style.depth;
+      for (const side of [-1, 1]) {
+        const w0 = newWall(style, Math.round(length), Math.round(height));
+        w0.name = side < 0 ? 'Left wall' : 'Right wall';
+        shapes.push({
+          id: nextId++, type: 'wall', name: w0.name, wall: w0, mode: 'add', material: 'stone', visible: true,
+          position: [side * (span / 2 + wallDepth / 2), 0, length / 2], rotation: [0, side < 0 ? 90 : 270, 0], scale: [1, 1, 1],
+          params: {}, repeat: defaultRepeat(), group: 'Walls',
+        });
+      }
+    }
+    const roofSpan = form.elements.roofOn.value === 'walls' && wallDepth ? roofW + 2 * wallDepth : roofW;
     const roof = makeShape('vault', {
-      name: 'Vault roof', material: form.elements.roofMat.value,
-      position: [0, height + rise / 2, length / 2], scale: [roofW, rise, length],
-      params: { thickness: num('thickness'), roundness: num('roundness'), flatten: num('flatten') },
+      name: 'Vault roof', material: form.elements.roofMat.value, group: 'Roof',
+      position: [0, height + rise / 2, length / 2], scale: [roofSpan, rise, length],
+      params: { ...defaultParams('vault'), thickness: num('thickness'), roundness: num('roundness'), flatten: num('flatten') },
     });
     shapes.push(roof);
     // 1 unit = 1 block so the pillar spacing is exact

@@ -47,7 +47,11 @@
       <section>
         <h2>Add shape</h2>
         <div class="shape-grid" id="shape-buttons"></div>
-        <button id="btn-hall" class="wide" title="Generate pillars + a vaulted roof">🏛 Hall builder…</button>
+        <div class="btn-row builders">
+          <button id="btn-hall" title="Generate pillars, walls and a vaulted roof">🏛 Hall…</button>
+          <button id="btn-wall" title="Design a wall: layered depth, palettes and gradients">🧱 Wall…</button>
+          <button id="btn-pillar" title="Design a pillar: base, trapdoor wraps, bands, capital">🗿 Pillar…</button>
+        </div>
       </section>
       <section>
         <h2>Stamps <span class="hint">exact block details</span></h2>
@@ -60,13 +64,15 @@
         <input type="file" id="stamp-file" accept=".schem,.schematic,.nbt" hidden />
       </section>
       <section class="grow">
-        <h2>Shapes <span class="hint">top → bottom = order applied</span></h2>
+        <h2>Parts &amp; shapes <span class="hint">top → bottom = order applied</span></h2>
         <ul class="shape-list" id="shape-list"></ul>
       </section>
       <section id="props" hidden>
         <h2>Selected</h2>
         <label class="row"><span>Name</span><input id="p-name" type="text" /></label>
-        <div class="row stamp-only"><span>Stamp</span><span id="p-stamp-name" class="ellipsis"></span><button id="p-edit-stamp" type="button">Edit</button></div>
+        <div class="row stamp-only"><span id="p-stamp-label">Stamp</span><span id="p-stamp-name" class="ellipsis"></span><button id="p-edit-stamp" type="button">Edit</button></div>
+        <label class="row"><span>Part</span><input id="p-group" type="text" list="group-list" placeholder="none (e.g. Walls)" /></label>
+        <datalist id="group-list"></datalist>
         <label class="row no-stamp"><span>Mode</span>
           <select id="p-mode"><option value="add">Add (solid)</option><option value="sub">Carve (subtract)</option></select>
         </label>
@@ -216,6 +222,7 @@
           <label>Pillar every (along length) <input name="every" type="number" min="1" max="100" value="6" /></label>
           <label>Pillar style <select name="pillarStyle"><option value="box">Simple box</option></select></label>
           <label>Material <select name="pillarMat"></select></label>
+          <label>Side walls <select name="wallStyle"></select></label>
         </fieldset>
         <fieldset>
           <legend>Roof</legend>
@@ -225,6 +232,7 @@
           <label>Roundness <input name="roundness" type="range" min="1" max="6" step="0.1" value="2" /><output name="roundOut">2</output></label>
           <label>Flatten <input name="flatten" type="range" min="0" max="0.9" step="0.05" value="0" /><output name="flatOut">0</output></label>
           <label>Material <select name="roofMat"></select></label>
+          <label>Roof rests on <select name="roofOn"><option value="walls">the walls</option><option value="pillars">the pillars</option></select></label>
           <label class="chk"><input name="replace" type="checkbox" checked /> Replace current shapes</label>
         </fieldset>
       </div>
@@ -279,6 +287,78 @@
     <div class="btn-row se-foot">
       <button id="se-cancel" type="button">Cancel</button>
       <button id="se-save" type="button" class="primary">Save stamp</button>
+    </div>
+  </dialog>
+
+  <dialog id="wall-dialog" class="stamp-dialog">
+    <div class="se-head">
+      <input id="we-name" type="text" placeholder="Wall name" />
+      <span class="se-size">Length <input id="we-length" type="number" min="1" max="500" /> Height <input id="we-height" type="number" min="1" max="200" /></span>
+      <span class="se-size">Profile: depth <input id="we-depth" type="number" min="1" max="12" /> rows <input id="we-rows" type="number" min="1" max="40" />
+        <button id="we-apply" type="button">Apply</button></span>
+      <span class="se-size">Stretch <select id="we-stretch"></select></span>
+      <button id="we-seed" type="button" title="New random arrangement of the palettes">🎲 Shuffle</button>
+      <select id="we-preset"></select>
+    </div>
+    <p class="muted we-help">Paint the wall's <b>cross-section</b>: left is the back, right is the front (room side). Each column of cells is one layer of depth, so you can step parts forward (plinths, beams, cornices) or set them back (panels). The <b>stretch row</b> repeats to fit any height, so the base stays on the floor and the beam stays at the top. Paint with a <b>palette (P)</b> to mix blocks with a gradient from bottom to top.</p>
+    <div class="se-body">
+      <div class="se-palette">
+        <input id="we-search" type="search" placeholder="Search palettes and blocks…" />
+        <div id="we-blocks" class="se-blocks"></div>
+        <div class="se-current"><i id="we-swatch"></i><input id="we-state" type="text" spellcheck="false" title="Block state or pal:&lt;palette&gt; to paint" /></div>
+        <div id="we-props" class="se-props"></div>
+        <div id="pe-box" class="pe-box" hidden>
+          <div class="pe-top"><input id="pe-name" type="text" /><button id="pe-dup" type="button" title="Copy this palette">Copy</button></div>
+          <canvas id="pe-strip" width="232" height="44" title="Gradient preview: bottom row = floor, top row = top of the wall"></canvas>
+          <div id="pe-entries"></div>
+          <div class="btn-row"><button id="pe-add" type="button">+ Block</button><button id="pe-new" type="button">New palette</button></div>
+          <small class="muted">Weights: how common each block is at the top and at the bottom of the wall. Edits apply to every wall using this palette.</small>
+        </div>
+      </div>
+      <div class="se-grid">
+        <canvas id="we-canvas"></canvas>
+        <div class="se-hover muted" id="we-hover">&nbsp;</div>
+        <div class="se-tools"><button id="we-undo" type="button">↶ Undo</button><button id="we-style" type="button" title="Keep this profile as a reusable wall style (Hall builder, other walls)">Save as wall style</button></div>
+      </div>
+      <div class="se-3d-wrap">
+        <canvas id="we-3d"></canvas>
+        <div class="muted" id="we-info"></div>
+      </div>
+    </div>
+    <div class="btn-row se-foot">
+      <button id="we-cancel" type="button">Cancel</button>
+      <button id="we-save" type="button" class="primary">Save wall</button>
+    </div>
+  </dialog>
+
+  <dialog id="pillar-dialog" class="pillar-dialog">
+    <h3>🗿 Pillar builder</h3>
+    <p class="muted">Describe the pillar and get a stamp you can place, repeat and still fine-tune by hand.</p>
+    <div class="pb-body">
+      <form id="pillar-form" class="pb-form" onsubmit="return false">
+        <label>Name <input name="name" type="text" /></label>
+        <label>Height <input name="height" type="number" min="3" max="64" /></label>
+        <label>Wood <select name="wood"></select></label>
+        <label>Column block <input name="column" type="text" placeholder="stripped_spruce_log[axis=y]" /></label>
+        <label>Base <select name="base">
+          <option value="skirt">Wide: 2 steps (stairs + planks + stairs)</option>
+          <option value="stairs">Stair ring</option>
+          <option value="none">None</option></select></label>
+        <label>Trapdoor wrap at the bottom <input name="lowerWrap" type="number" min="0" max="20" /></label>
+        <label>Trapdoor wrap at the top <input name="upperWrap" type="number" min="0" max="20" /></label>
+        <label>Bands at heights <input name="bands" type="text" placeholder="e.g. 5, 8" /></label>
+        <label>Band wood <select name="bandWood"></select></label>
+        <label>Capital <select name="capital">
+          <option value="stairs">Upside-down stair ring</option>
+          <option value="stairs-cap">Stair ring + plank cap</option>
+          <option value="none">None</option></select></label>
+      </form>
+      <div class="pb-3d-wrap"><canvas id="pb-3d"></canvas><div class="muted" id="pb-info"></div></div>
+    </div>
+    <div class="btn-row se-foot">
+      <button id="pb-cancel" type="button">Cancel</button>
+      <button id="pb-edit" type="button" title="Create and open in the stamp editor for hand edits">Create &amp; edit blocks</button>
+      <button id="pb-create" type="button" class="primary">Create stamp</button>
     </div>
   </dialog>
 

@@ -22,13 +22,13 @@ const EXTRA = [
   'end_rod', 'quartz_pillar', 'purpur_pillar', 'basalt', 'polished_basalt', 'smooth_basalt', 'packed_mud', 'gravel',
   'coarse_dirt', 'redstone_lamp', 'sea_lantern', 'shroomlight', 'glowstone', 'ochre_froglight',
 ];
-const PICKER = [...new Set([
+export const PICKER = [...new Set([
   ...BLOCKS.flatMap((b) => [b.full, b.slab, b.stairs].filter(Boolean)),
   ...EXTRA.map((n) => 'minecraft:' + n),
 ])];
 
 // Properties offered per block family: [name, values]
-function propSchema(name) {
+export function propSchema(name) {
   const fam = shapeFamily(name);
   const FACING = ['north', 'east', 'south', 'west'];
   if (fam === 'stairs') return [['facing', FACING], ['half', ['bottom', 'top']], ['shape', ['straight', 'inner_left', 'inner_right', 'outer_left', 'outer_right']]];
@@ -348,4 +348,46 @@ export function stampGeometry(stamp, unit) {
   const merged = mergeGeometries(parts);
   parts.forEach((p) => p.dispose());
   return merged;
+}
+
+// Small orbitable 3D preview of a voxel grid (used by the wall and pillar builders).
+export class Preview3D {
+  constructor(canvas) {
+    this.canvas = canvas;
+    this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+    this.renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
+    this.scene = new THREE.Scene();
+    this.camera = new THREE.PerspectiveCamera(45, 1, 0.1, 1000);
+    this.controls = new OrbitControls(this.camera, canvas);
+    this.controls.enableDamping = true;
+    this.scene.add(new THREE.HemisphereLight(0xffffff, 0x445566, 1.6));
+    const sun = new THREE.DirectionalLight(0xffffff, 1.6);
+    sun.position.set(0.6, 1, 0.35);
+    this.scene.add(sun);
+    this.group = null;
+    this.running = false;
+  }
+  show(v, refit = false) {
+    disposeBlockGroup(this.group);
+    this.group = buildBlockGroup(v);
+    this.group.position.set(-v.W / 2, 0, -v.D / 2);
+    this.scene.add(this.group);
+    const light = document.documentElement.dataset.resolvedTheme === 'light';
+    this.scene.background = new THREE.Color(light ? 0xdfe8ef : 0x15181d);
+    const w = this.canvas.clientWidth || 300, h = this.canvas.clientHeight || 300;
+    this.renderer.setSize(w, h, false);
+    this.camera.aspect = w / h; this.camera.updateProjectionMatrix();
+    if (refit) {
+      const r = Math.max(v.W, v.H, v.D);
+      this.controls.target.set(0, v.H / 2, 0);
+      this.camera.position.set(r * 0.9, v.H / 2 + r * 0.6, r * 1.5);
+    }
+  }
+  start() {
+    if (this.running) return;
+    this.running = true;
+    const loop = () => { if (!this.running) return; requestAnimationFrame(loop); this.controls.update(); this.renderer.render(this.scene, this.camera); };
+    loop();
+  }
+  stop() { this.running = false; }
 }

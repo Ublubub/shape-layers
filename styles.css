@@ -293,3 +293,38 @@ fieldset input[type="number"], fieldset select { width: 100%; }
 .shape-legend i { width: 12px; height: 12px; border-radius: 3px; display: inline-block; border: 1px solid rgba(0,0,0,.25); }
 .roof-size { font-size: 12px; margin-bottom: 6px; line-height: 1.5; }
 .roof-size small, .param .top small { color: var(--muted); font-weight: 400; }
+
+/* --- builders, parts, wall editor, pillar builder --- */
+.builders { margin-top: 8px; }
+.builders button { font-size: 12px; padding: 6px 2px; }
+.shape-list li.group-head { background: var(--panel-2); font-weight: 600; margin-top: 4px; border: 1px solid var(--border); }
+.shape-list li.group-head.sel { border-color: var(--sel); }
+.shape-list li.group-head.solo { border-color: var(--accent); }
+.shape-list li.group-head small { color: var(--muted); font-weight: 400; margin-right: auto; }
+.shape-list li.group-head .nm { flex: 0 1 auto; }
+.shape-list .caret { width: 12px; color: var(--muted); }
+.shape-list li.in-group { margin-left: 14px; }
+.shape-list li.solo-banner { background: rgba(92, 201, 107, .15); border: 1px solid var(--accent); font-size: 12px; }
+.shape-list li.solo-banner button { margin-left: auto; color: var(--accent); }
+.se-block.pal canvas { width: 28px; height: 14px; border-radius: 3px; flex: none; border: 1px solid var(--border); image-rendering: pixelated; }
+.we-help { font-size: 12px; margin: 0 0 8px; }
+#we-canvas { width: 100%; height: 420px; border: 1px solid var(--border); border-radius: 6px; cursor: crosshair; touch-action: none; }
+#we-3d { width: 100%; height: 420px; border: 1px solid var(--border); border-radius: 6px; }
+#we-preset { max-width: 220px; }
+.pe-box { border: 1px solid var(--border); border-radius: 8px; padding: 6px; display: flex; flex-direction: column; gap: 4px; }
+.pe-box[hidden] { display: none; }
+.pe-top { display: flex; gap: 4px; }
+.pe-top input { flex: 1; font-weight: 600; }
+#pe-strip { width: 100%; height: 44px; border-radius: 4px; image-rendering: pixelated; }
+.pe-row { display: grid; grid-template-columns: 14px 1fr 44px 44px 22px; gap: 4px; align-items: center; }
+.pe-row i { width: 14px; height: 14px; border-radius: 3px; }
+.pe-row input { font-size: 11px; padding: 2px 4px; }
+.pe-row button { padding: 0; border: none; background: transparent; color: var(--muted); }
+.pe-headrow { font-size: 10px; color: var(--muted); }
+.pillar-dialog { width: min(820px, calc(100vw - 32px)); max-width: none; }
+.pb-body { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.pb-form { display: flex; flex-direction: column; gap: 6px; }
+.pb-form label { display: grid; grid-template-columns: 1fr 1.2fr; align-items: center; gap: 8px; font-size: 13px; }
+.pb-form input, .pb-form select { width: 100%; }
+#pb-3d { width: 100%; height: 400px; border: 1px solid var(--border); border-radius: 6px; }
+@media (max-width: 760px) { .pb-body { grid-template-columns: 1fr; } }

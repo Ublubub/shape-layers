@@ -98,7 +98,7 @@ const KEYWORDS = [
   ['pale_oak', '#e3dcd8'], ['oak', '#a2834f'], ['deepslate', '#4a4a4d'], ['blackstone', '#2b2429'], ['tuff', '#62675f'],
   ['mossy', '#6f7a63'], ['cobble', '#6b6b6b'], ['andesite', '#888a8a'], ['diorite', '#c8c8c8'], ['granite', '#956755'],
   ['calcite', '#dfe0dc'], ['red_sandstone', '#b5621f'], ['sandstone', '#d8cb9b'], ['mud', '#8a6a50'], ['nether_brick', '#2e161a'],
-  ['brick', '#976253'], ['quartz', '#ebe5de'], ['prismarine', '#63a597'], ['purpur', '#a97ea9'], ['end_stone', '#dbe0a2'],
+  ['stone_brick', '#7a7a7a'], ['polished_andesite', '#848687'], ['brick', '#976253'], ['quartz', '#ebe5de'], ['prismarine', '#63a597'], ['purpur', '#a97ea9'], ['end_stone', '#dbe0a2'],
   ['copper', '#bf6b51'], ['iron', '#c9c9c9'], ['gold', '#f2d046'], ['lantern', '#e9b04f'], ['torch', '#ffd36b'],
   ['chain', '#3c4049'], ['glass', '#bfdce6'], ['leaves', '#4f7a2c'], ['azalea', '#5e7f2e'], ['moss', '#596e2d'],
   ['vine', '#3f6b1f'], ['terracotta', '#985f45'], ['hay', '#c6a227'], ['barrel', '#7a5734'], ['bookshelf', '#6b4a2e'],
