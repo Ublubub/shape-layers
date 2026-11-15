@@ -455,7 +455,7 @@ function updateOverlay() {
   disposeBlockGroup(overlayGroup);
   overlayGroup = null;
   if (!overlayOn || !voxels || !voxels.origin) return;
-  overlayGroup = buildBlockGroup(voxels);
+  overlayGroup = buildBlockGroup(voxels, { colorMode: blockView.colorMode });
   overlayGroup.position.fromArray(voxels.origin);
   overlayGroup.scale.fromArray(voxels.cell);
   scene.add(overlayGroup);
@@ -576,16 +576,23 @@ function renderParams() {
   }
 }
 
-// Span / rise sliders for a vault. Rise keeps the base where it is (so the roof stays on
-// its pillars); "keep ratio" makes the rise follow the span.
+// Roof controls for a vault, all in BLOCKS (the arch alone, pillars not included).
+// Rise keeps the base where it is (so the roof stays on its pillars); length grows from
+// the start of the roof; "keep ratio" makes the rise follow the span.
+const blockScale = () => scaleFor(new THREE.Vector3(1, 1, 1)); // blocks per design unit, per axis
+const roundHalf = (v) => Math.round(v * 2) / 2;
+
 function vaultControls(s) {
   const box = document.createElement('div');
   box.className = 'vault-box';
   box.innerHTML = `
-    <div class="param"><div class="top"><span>Span (width)</span><input type="number" min="1" max="400" step="1" data-vault="span" /></div>
+    <div class="roof-size" data-vault="summary"></div>
+    <div class="param"><div class="top"><span>Span <small>(width, blocks)</small></span><input type="number" min="1" max="400" step="1" data-vault="span" /></div>
       <input type="range" min="3" max="120" step="1" data-vault="span" /></div>
-    <div class="param"><div class="top"><span>Rise (roof height)</span><input type="number" min="0.5" max="200" step="0.5" data-vault="rise" /></div>
+    <div class="param"><div class="top"><span>Rise <small>(arch height only, blocks)</small></span><input type="number" min="0.5" max="200" step="0.5" data-vault="rise" /></div>
       <input type="range" min="1" max="60" step="0.5" data-vault="rise" /></div>
+    <div class="param"><div class="top"><span>Length <small>(blocks)</small></span><input type="number" min="1" max="1000" step="1" data-vault="length" /></div>
+      <input type="range" min="3" max="200" step="1" data-vault="length" /></div>
     <div class="ratio-row"><span>rise / span <b data-vault="ratio"></b></span>
       <button type="button" data-ratio="0.5" title="Semicircle">½</button><button type="button" data-ratio="0.3333" title="Squashed">⅓</button><button type="button" data-ratio="0.25" title="Flat">¼</button>
       <label class="chk" title="Changing the span also scales the rise"><input type="checkbox" data-vault="lock" /> keep ratio</label></div>
@@ -596,31 +603,65 @@ function vaultControls(s) {
     </div>
     <small>Roofs with "Join with other roofs" on merge automatically: change either roof's rise, span or shape and the intersection follows.</small>`;
   const base = () => s.position[1] - Math.abs(s.scale[1]) / 2;
-  const setRise = (r) => {
+  const setRise = (blocks) => {
     const b = base();
-    s.scale[1] = Math.max(0.5, r);
+    s.scale[1] = Math.max(0.5, blocks) / blockScale()[1];
     s.position[1] = b + s.scale[1] / 2;
   };
-  const setSpan = (w) => {
-    const ratio = Math.abs(s.scale[1] / s.scale[0]);
-    s.scale[0] = Math.max(1, w) * Math.sign(s.scale[0] || 1);
-    if (s.params && s.params.lockRatio) setRise(Math.abs(s.scale[0]) * ratio);
+  const setSpan = (blocks) => {
+    const sc = blockScale();
+    const ratio = (Math.abs(s.scale[1]) * sc[1]) / (Math.abs(s.scale[0]) * sc[0]);
+    s.scale[0] = (Math.max(1, blocks) / sc[0]) * Math.sign(s.scale[0] || 1);
+    if (s.params && s.params.lockRatio) setRise(roundHalf(blocks * ratio));
   };
-  box.querySelectorAll('[data-vault="span"]').forEach((el) => {
-    el.addEventListener('input', () => { const v = parseFloat(el.value); if (Number.isFinite(v)) { setSpan(v); syncMesh(s); fillProps(); updateDims(); } });
+  const setLength = (blocks) => {
+    // keep the start of the roof fixed and grow along its own length axis
+    const old = Math.abs(s.scale[2]);
+    const len = Math.max(1, blocks) / blockScale()[2];
+    const a = s.rotation[1] * DEG, d = (len - old) / 2;
+    s.scale[2] = len * Math.sign(s.scale[2] || 1);
+    s.position[0] += Math.sin(a) * d;
+    s.position[2] += Math.cos(a) * d;
+  };
+  const wire = (name, fn) => box.querySelectorAll(`[data-vault="${name}"]`).forEach((el) => {
+    el.addEventListener('input', () => { const v = parseFloat(el.value); if (Number.isFinite(v)) { fn(v); syncMesh(s); fillProps(); updateDims(); } });
     el.addEventListener('change', () => commit());
   });
-  box.querySelectorAll('[data-vault="rise"]').forEach((el) => {
-    el.addEventListener('input', () => { const v = parseFloat(el.value); if (Number.isFinite(v)) { setRise(v); syncMesh(s); fillProps(); updateDims(); } });
-    el.addEventListener('change', () => commit());
-  });
+  wire('span', setSpan);
+  wire('rise', setRise);
+  wire('length', setLength);
   box.querySelectorAll('[data-ratio]').forEach((b) => b.onclick = () => {
-    setRise(Math.round(Math.abs(s.scale[0]) * parseFloat(b.dataset.ratio) * 2) / 2);
+    const spanBlocks = Math.abs(s.scale[0]) * blockScale()[0];
+    setRise(roundHalf(spanBlocks * parseFloat(b.dataset.ratio)));
     syncMesh(s); fillProps(); commit();
   });
   box.querySelector('[data-vault="lock"]').onchange = (e) => { s.params = { ...(s.params || {}), lockRatio: e.target.checked }; commit(); };
   box.querySelectorAll('[data-connect]').forEach((b) => b.onclick = () => connectVault(s, b.dataset.connect));
   return box;
+}
+
+// Fill the vault controls with the selected roof's size in blocks.
+function fillVaultControls(s) {
+  const sc = blockScale();
+  const span = roundHalf(Math.abs(s.scale[0]) * sc[0]);
+  const rise = roundHalf(Math.abs(s.scale[1]) * sc[1]);
+  const length = roundHalf(Math.abs(s.scale[2]) * sc[2]);
+  const set = (el, v) => { if (document.activeElement !== el) el.value = v; };
+  document.querySelectorAll('[data-vault="span"]').forEach((el) => set(el, span));
+  document.querySelectorAll('[data-vault="rise"]').forEach((el) => set(el, rise));
+  document.querySelectorAll('[data-vault="length"]').forEach((el) => set(el, length));
+  const r = document.querySelector('[data-vault="ratio"]');
+  if (r) r.textContent = (rise / span).toFixed(2);
+  const lock = document.querySelector('[data-vault="lock"]');
+  if (lock) lock.checked = !!(s.params && s.params.lockRatio);
+  const sum = document.querySelector('[data-vault="summary"]');
+  if (sum) {
+    const box = computeBounds();
+    const baseY = box.isEmpty() ? 0 : roundHalf((s.position[1] - Math.abs(s.scale[1]) / 2 - box.min.y) * sc[1]);
+    const thick = (s.params && s.params.thickness) || 0;
+    sum.innerHTML = `<b>Roof only:</b> ${span} wide × ${rise} high × ${length} long<br>` +
+      `<small>arch starts at y = ${baseY}, crown at y = ${baseY + rise}${thick ? ` · shell ${thick} thick` : ''}</small>`;
+  }
 }
 
 // Add a second vault at 90°: a full crossing through the center, or a branch from the center outward.
@@ -665,14 +706,7 @@ function fillProps() {
   document.querySelectorAll('[data-vec]').forEach((el) => set(el, s[el.dataset.vec][+el.dataset.i]));
   const p = { ...defaultParams(s.type), ...(s.params || {}) };
   document.querySelectorAll('#p-params [data-param]').forEach((el) => { if (el.type === 'checkbox') el.checked = !!p[el.dataset.param]; else set(el, p[el.dataset.param]); });
-  if (s.type === 'vault') {
-    document.querySelectorAll('[data-vault="span"]').forEach((el) => set(el, Math.abs(s.scale[0])));
-    document.querySelectorAll('[data-vault="rise"]').forEach((el) => set(el, Math.abs(s.scale[1])));
-    const r = document.querySelector('[data-vault="ratio"]');
-    if (r) r.textContent = (Math.abs(s.scale[1]) / Math.abs(s.scale[0])).toFixed(2);
-    const lock = document.querySelector('[data-vault="lock"]');
-    if (lock) lock.checked = !!(s.params && s.params.lockRatio);
-  }
+  if (s.type === 'vault') fillVaultControls(s);
   const r = s.repeat || defaultRepeat();
   set($('r-count'), r.count); $('r-axis').value = r.axis; set($('r-spacing'), r.spacing);
 }
@@ -908,6 +942,9 @@ function setView(v) {
   document.querySelectorAll('.tab').forEach((t) => t.classList.toggle('active', t.dataset.view === v));
   $('layer-wrap').hidden = v !== 'layers';
   $('gizmo-bar').hidden = v !== 'design';
+  $('blocks-bar').hidden = v !== 'blocks';
+  $('block-tip').hidden = true;
+  blockView.clearPick();
   if (overlayGroup) overlayGroup.visible = v === 'design';
   orbit.enabled = v === 'design';
   blockView.controls.enabled = v === 'blocks';
@@ -927,6 +964,30 @@ function initViews() {
   };
   $('show-bounds').onchange = updateDims;
   $('show-blocks').onchange = (e) => setOverlay(e.target.checked);
+  const setColorMode = (m) => {
+    blockView.setColorMode(m);
+    document.querySelectorAll('#color-mode button').forEach((b) => b.classList.toggle('active', b.dataset.color === m));
+    $('shape-legend').hidden = m !== 'shape';
+    try { localStorage.setItem('shape-layers:colorMode', m); } catch { /* ignore */ }
+    updateOverlay();
+  };
+  document.querySelectorAll('#color-mode button').forEach((b) => b.onclick = () => setColorMode(b.dataset.color));
+  let savedMode = 'material';
+  try { savedMode = localStorage.getItem('shape-layers:colorMode') || 'material'; } catch { /* ignore */ }
+  setColorMode(savedMode);
+  // hover a block in the Blocks view to see exactly what it is
+  canvas.addEventListener('pointermove', (e) => {
+    if (view !== 'blocks' || e.buttons) { $('block-tip').hidden = true; return; }
+    const r = canvas.getBoundingClientRect();
+    const hit = blockView.pick(new THREE.Vector2(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1));
+    const tip = $('block-tip');
+    if (!hit) { tip.hidden = true; return; }
+    tip.textContent = `${hit.label}  ·  x ${hit.x}, y ${hit.y}, z ${hit.z}`;
+    tip.hidden = false;
+    tip.style.left = (e.clientX - r.left + 14) + 'px';
+    tip.style.top = (e.clientY - r.top + 14) + 'px';
+  });
+  canvas.addEventListener('pointerleave', () => { $('block-tip').hidden = true; blockView.clearPick(); });
   $('btn-undo').onclick = undo;
   $('btn-redo').onclick = redo;
   $('btn-frame').onclick = frameDesign;

@@ -1,8 +1,23 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { BLOCKS, FULL, BOTTOM, TOP, STAIR, CUSTOM } from './blocks.js';
+import { BLOCKS, FULL, BOTTOM, TOP, STAIR, CUSTOM, blockLabel } from './blocks.js';
 import { maskGeometry, stateGeometry } from './blockShapes.js';
-import { stateColor } from './blockstates.js';
+import { stateColor, stateLabel } from './blockstates.js';
+
+// "Color by shape" palette: each kind of piece gets its own clearly different color.
+export const SHAPE_COLORS = {
+  full: '#9aa3ad', bottom: '#38bdf8', top: '#1d4ed8', stair: '#f59e0b', stairTop: '#dc2626', stamp: null,
+};
+const shapeKey = (kind, meta) => kind === FULL ? 'full' : kind === BOTTOM ? 'bottom' : kind === TOP ? 'top'
+  : kind === STAIR ? ((meta & 0x0f) === 0x0f ? 'stair' : 'stairTop') : 'stamp';
+
+// Human-readable name of the block at grid index i.
+export function cellLabel(v, i) {
+  const k = v.kind[i];
+  if (!k) return 'air';
+  if (k === CUSTOM) return stateLabel(v.custom[v.meta[i]]) + ' (stamp)';
+  return blockLabel(v.mat[i], k, v.meta[i]);
+}
 
 function blockTexture() {
   const c = document.createElement('canvas');
@@ -30,7 +45,7 @@ export const blockMaterial = new THREE.MeshLambertMaterial({ map: blockTexture()
  * in the returned group's space. Layers above `maxLayer` are skipped; layers below `dimBelow`
  * are darkened (for the layer cut view).
  */
-export function buildBlockGroup(v, { maxLayer = v.H - 1, dimBelow = -1, material = blockMaterial } = {}) {
+export function buildBlockGroup(v, { maxLayer = v.H - 1, dimBelow = -1, material = blockMaterial, colorMode = 'material' } = {}) {
   const group = new THREE.Group();
   const { W, D, kind, mat, meta } = v;
   const WD = W * D, top = maxLayer;
@@ -63,18 +78,21 @@ export function buildBlockGroup(v, { maxLayer = v.H - 1, dimBelow = -1, material
   const col = new THREE.Color();
   const colors = BLOCKS.map((b) => new THREE.Color(b.color));
   const customColors = (v.custom || []).map((st) => new THREE.Color(stateColor(st)));
+  const shapeColors = Object.fromEntries(Object.entries(SHAPE_COLORS).filter(([, c]) => c).map(([k, c]) => [k, new THREE.Color(c)]));
   for (const { geo, list } of buckets.values()) {
     const mesh = new THREE.InstancedMesh(geo, material, list.length);
     list.forEach((i, n) => {
       const y = Math.floor(i / WD), r = i - y * WD, z = Math.floor(r / W), x = r - z * W;
       m4.makeTranslation(x + 0.5, y + 0.5, z + 0.5);
       mesh.setMatrixAt(n, m4);
-      col.copy(kind[i] === CUSTOM ? customColors[meta[i]] : colors[mat[i]]);
+      if (colorMode === 'shape' && kind[i] !== CUSTOM) col.copy(shapeColors[shapeKey(kind[i], meta[i])]);
+      else col.copy(kind[i] === CUSTOM ? customColors[meta[i]] : colors[mat[i]]);
       if (y < dimBelow) col.multiplyScalar(0.45);
       mesh.setColorAt(n, col);
     });
     mesh.instanceMatrix.needsUpdate = true;
     if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+    mesh.userData.cells = list; // instanceId -> grid index (for hover info)
     group.add(mesh);
   }
   return group;
@@ -106,7 +124,30 @@ export class BlockView {
     this.layerFrame = null;
     this.v = null;
     this.maxLayer = 0;
+    this.colorMode = 'material';
+    this.ray = new THREE.Raycaster();
+    // outline of the hovered block
+    this.hoverBox = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.BoxGeometry(1.02, 1.02, 1.02)), new THREE.LineBasicMaterial({ color: 0xffd43b }));
+    this.hoverBox.visible = false;
+    this.scene.add(this.hoverBox);
   }
+
+  setColorMode(m) { this.colorMode = m; this.rebuild(); }
+
+  // ndc: THREE.Vector2 in [-1, 1]. Returns { label, x, y, z } or null.
+  pick(ndc) {
+    if (!this.group) return null;
+    this.ray.setFromCamera(ndc, this.camera);
+    const hit = this.ray.intersectObjects(this.group.children, false)[0];
+    if (!hit || hit.instanceId === undefined) { this.hoverBox.visible = false; return null; }
+    const i = hit.object.userData.cells[hit.instanceId];
+    const { W, D } = this.v, WD = W * D;
+    const y = Math.floor(i / WD), r = i - y * WD, z = Math.floor(r / W), x = r - z * W;
+    this.hoverBox.position.set(x - W / 2 + 0.5, y + 0.5, z - D / 2 + 0.5);
+    this.hoverBox.visible = true;
+    return { label: cellLabel(this.v, i), x, y, z };
+  }
+  clearPick() { this.hoverBox.visible = false; }
 
   setVoxels(v, refit) {
     this.v = v;
@@ -141,7 +182,7 @@ export class BlockView {
     const { W, H, D } = v;
     const top = this.maxLayer;
     const clipped = top < H - 1;
-    this.group = buildBlockGroup(v, { maxLayer: top, dimBelow: clipped ? top : -1 });
+    this.group = buildBlockGroup(v, { maxLayer: top, dimBelow: clipped ? top : -1, colorMode: this.colorMode });
     this.group.position.set(-W / 2, 0, -D / 2);
     this.scene.add(this.group);
     if (clipped) {

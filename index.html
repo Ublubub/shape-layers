@@ -130,6 +130,22 @@
         <label class="chk" title="Show block bounds in Design view"><input type="checkbox" id="show-bounds" checked /> Bounds</label>
         <label class="chk" title="Draw the converted blocks over the shapes"><input type="checkbox" id="show-blocks" /> Show blocks</label>
       </div>
+      <div class="toolbar" id="blocks-bar" hidden>
+        <span class="lbl">Color by</span>
+        <div class="seg" id="color-mode">
+          <button data-color="material" class="active" title="Each block in its material color">Material</button>
+          <button data-color="shape" title="Each kind of piece in its own color">Shape</button>
+        </div>
+        <span class="shape-legend" id="shape-legend" hidden>
+          <span><i style="background:#9aa3ad"></i>Full block</span>
+          <span><i style="background:#38bdf8"></i>Bottom slab</span>
+          <span><i style="background:#1d4ed8"></i>Top slab</span>
+          <span><i style="background:#f59e0b"></i>Stairs</span>
+          <span><i style="background:#dc2626"></i>Upside-down stairs</span>
+        </span>
+        <span class="lbl muted-s">Hover a block for details</span>
+      </div>
+      <div class="tooltip" id="block-tip" hidden></div>
       <div class="progress" id="progress" hidden><div></div></div>
       <div class="help" id="help">Left-drag orbit · Right-drag pan · Wheel zoom · Click a shape to select</div>
     </main>
