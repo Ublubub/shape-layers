@@ -1,0 +1,12 @@
+{
+  "name": "shape-layers",
+  "version": "0.1.0",
+  "description": "Sketch 3D structures with simple shapes and turn them into layer-by-layer Minecraft block plans with slabs.",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "start": "npx --yes serve -l 5173 .",
+    "test": "node --test tests/"
+  },
+  "license": "MIT"
+}

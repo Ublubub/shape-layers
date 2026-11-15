@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Shape Layers</title>
+  <meta name="description" content="Sketch 3D structures with simple shapes and turn them into layer-by-layer Minecraft block plans with slabs." />
+  <link rel="stylesheet" href="styles.css" />
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+        "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+      }
+    }
+  </script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><span class="logo">▦</span> Shape Layers</div>
+    <nav class="tabs" role="tablist">
+      <button class="tab active" data-view="design" title="Model with shapes (1)">1 · Design</button>
+      <button class="tab" data-view="blocks" title="3D block preview (2)">2 · Blocks</button>
+      <button class="tab" data-view="layers" title="Layer-by-layer plan (3)">3 · Layers</button>
+    </nav>
+    <div class="file">
+      <button id="btn-new" title="New project">New</button>
+      <button id="btn-open" title="Open a .json project">Open</button>
+      <button id="btn-save" title="Save project as .json">Save</button>
+      <div class="menu">
+        <button id="btn-export" class="primary">Export ▾</button>
+        <div class="menu-list" id="export-menu" hidden>
+          <button data-export="schem">Schematic (.schem) — WorldEdit / Litematica</button>
+          <button data-export="mcfunction">Commands (.mcfunction)</button>
+          <button data-export="materials">Material list (.csv)</button>
+          <button data-export="layer-png">Current layer (.png)</button>
+          <button data-export="sheet">Printable layer sheet</button>
+        </div>
+      </div>
+      <button id="btn-theme" title="Toggle light/dark">◐</button>
+      <input type="file" id="file-input" accept=".json,application/json" hidden />
+    </div>
+  </header>
+
+  <div class="app">
+    <aside class="panel left">
+      <section>
+        <h2>Add shape</h2>
+        <div class="shape-grid" id="shape-buttons"></div>
+      </section>
+      <section class="grow">
+        <h2>Shapes <span class="hint">top → bottom = order applied</span></h2>
+        <ul class="shape-list" id="shape-list"></ul>
+      </section>
+      <section id="props" hidden>
+        <h2>Selected</h2>
+        <label class="row"><span>Name</span><input id="p-name" type="text" /></label>
+        <label class="row"><span>Mode</span>
+          <select id="p-mode"><option value="add">Add (solid)</option><option value="sub">Carve (subtract)</option></select>
+        </label>
+        <label class="row"><span>Block</span><select id="p-mat"></select></label>
+        <div class="vec"><span>Position</span><input data-vec="position" data-i="0" type="number" step="0.5" /><input data-vec="position" data-i="1" type="number" step="0.5" /><input data-vec="position" data-i="2" type="number" step="0.5" /></div>
+        <div class="vec"><span>Size</span><input data-vec="scale" data-i="0" type="number" step="0.5" min="0.05" /><input data-vec="scale" data-i="1" type="number" step="0.5" min="0.05" /><input data-vec="scale" data-i="2" type="number" step="0.5" min="0.05" /></div>
+        <div class="vec"><span>Rotation°</span><input data-vec="rotation" data-i="0" type="number" step="15" /><input data-vec="rotation" data-i="1" type="number" step="15" /><input data-vec="rotation" data-i="2" type="number" step="15" /></div>
+        <div class="vec-labels"><span></span><span>x</span><span>y</span><span>z</span></div>
+        <div class="btn-row">
+          <button id="p-dup" title="Ctrl+D">Duplicate</button>
+          <button id="p-mirror" title="Duplicate mirrored across X">Mirror X</button>
+          <button id="p-del" class="danger" title="Delete">Delete</button>
+        </div>
+      </section>
+    </aside>
+
+    <main class="viewport" id="viewport">
+      <canvas id="three-canvas"></canvas>
+      <div class="layer-wrap" id="layer-wrap" hidden>
+        <canvas id="layer-canvas"></canvas>
+        <div class="tooltip" id="tooltip" hidden></div>
+        <div class="legend">
+          <span><i class="sw full"></i>Full block</span>
+          <span><i class="sw bottom"></i>Bottom slab</span>
+          <span><i class="sw top"></i>Top slab</span>
+          <span><i class="sw ghost"></i>Layer below</span>
+        </div>
+      </div>
+      <div class="toolbar" id="gizmo-bar">
+        <button data-gizmo="translate" class="active" title="Move (W)">✥ Move</button>
+        <button data-gizmo="scale" title="Stretch (R)">⤢ Stretch</button>
+        <button data-gizmo="rotate" title="Rotate (E)">⟳ Rotate</button>
+        <label class="chk"><input type="checkbox" id="snap" checked /> Snap</label>
+        <span class="sep"></span>
+        <button id="btn-undo" title="Ctrl+Z">↶</button>
+        <button id="btn-redo" title="Ctrl+Y">↷</button>
+        <button id="btn-frame" title="Frame (F)">⌖</button>
+        <label class="chk" title="Show block bounds in Design view"><input type="checkbox" id="show-bounds" checked /> Bounds</label>
+      </div>
+      <div class="progress" id="progress" hidden><div></div></div>
+      <div class="help" id="help">Left-drag orbit · Right-drag pan · Wheel zoom · Click a shape to select</div>
+    </main>
+
+    <aside class="panel right">
+      <section>
+        <h2>Size in blocks</h2>
+        <div class="seg" id="size-mode">
+          <button data-mode="scale" class="active">Scale</button>
+          <button data-mode="fit">Fit size</button>
+        </div>
+        <label class="row" id="row-bpu"><span>Blocks / unit</span><input id="bpu" type="number" step="0.25" min="0.05" value="2" /></label>
+        <div class="dims">
+          <label><span>W (x)</span><input id="dim-w" type="number" min="1" step="1" /></label>
+          <label><span>H (y)</span><input id="dim-h" type="number" min="1" step="1" /></label>
+          <label><span>D (z)</span><input id="dim-d" type="number" min="1" step="1" /></label>
+        </div>
+        <label class="chk"><input type="checkbox" id="keep-prop" checked /> Keep proportions</label>
+        <div class="presets">Quick scale:
+          <button data-mult="0.5">½×</button><button data-mult="2">2×</button><button data-mult="3">3×</button>
+        </div>
+      </section>
+      <section>
+        <h2>Conversion</h2>
+        <label class="chk"><input type="checkbox" id="opt-slabs" checked /> Smooth curves with slabs</label>
+        <label class="chk"><input type="checkbox" id="opt-topslabs" checked /> Allow upside-down (top) slabs</label>
+        <label class="chk"><input type="checkbox" id="opt-hollow" /> Hollow interior (shell only)</label>
+        <label class="row"><span>Fill threshold</span><input id="opt-threshold" type="range" min="0.2" max="0.8" step="0.05" value="0.5" /><output id="out-threshold">50%</output></label>
+        <label class="row"><span>Quality</span>
+          <select id="opt-quality"><option value="fast">Fast</option><option value="normal" selected>Normal</option><option value="high">High</option></select>
+        </label>
+        <label class="chk"><input type="checkbox" id="opt-auto" checked /> Auto-convert on change</label>
+        <button id="btn-convert" class="primary wide">Convert to blocks</button>
+      </section>
+      <section>
+        <h2>Layer <span class="hint" id="layer-y"></span></h2>
+        <div class="layer-ctl">
+          <button id="layer-down" title="Layer down (PageDown / ↓ in Layers)">▼</button>
+          <input id="layer-slider" type="range" min="0" max="0" value="0" />
+          <button id="layer-up" title="Layer up (PageUp / ↑ in Layers)">▲</button>
+        </div>
+        <div class="layer-info" id="layer-info"></div>
+        <label class="chk"><input type="checkbox" id="layer-built" /> Mark this layer as built</label>
+        <label class="chk"><input type="checkbox" id="layer-ghost" checked /> Show layer below (2D)</label>
+        <label class="chk"><input type="checkbox" id="layer-all" /> Show all layers (3D)</label>
+      </section>
+      <section class="grow">
+        <h2>Materials</h2>
+        <div id="stats" class="stats"></div>
+        <ul id="materials" class="materials"></ul>
+      </section>
+    </aside>
+  </div>
+
+  <script type="module" src="src/main.js"></script>
+</body>
+</html>

@@ -1,0 +1,776 @@
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { TransformControls } from 'three/addons/controls/TransformControls.js';
+import { SHAPE_TYPES, getGeometry } from './shapes.js';
+import { BLOCKS, blockIndex } from './blocks.js';
+import { summarize } from './voxelizer.js';
+import { LayerView, drawLayer, LIGHT_THEME } from './layerView.js';
+import { BlockView } from './blockView.js';
+import { download, toMcfunction, toSchem, materialList, stacks } from './exporters.js';
+
+const $ = (id) => document.getElementById(id);
+const STORAGE_KEY = 'shape-layers:v1';
+const MAX_CELLS = 16_000_000;
+const DEG = Math.PI / 180;
+
+// ---------------------------------------------------------------- state
+const defaultSettings = () => ({
+  sizeMode: 'scale', bpu: 2, keepProp: true, fitAxis: 1, fitDims: [32, 32, 32],
+  slabs: true, topSlabs: true, hollow: false, threshold: 0.5, quality: 'normal', auto: true,
+});
+
+let shapes = [];
+let settings = defaultSettings();
+let built = new Set();
+let selectedId = null;
+let nextId = 1;
+let view = 'design';
+let voxels = null, summary = null;
+let layer = 0;
+
+function makeShape(type, over = {}) {
+  const def = SHAPE_TYPES.find((t) => t.type === type) || SHAPE_TYPES[0];
+  const n = shapes.filter((s) => s.type === type).length + 1;
+  return {
+    id: nextId++, type, name: `${def.label} ${n}`, mode: 'add', material: 'stone', visible: true,
+    position: [0, def.scale[1] / 2, 0], rotation: [0, 0, 0], scale: [...def.scale], ...over,
+  };
+}
+
+function defaultProject() {
+  nextId = 1; shapes = [];
+  shapes.push(makeShape('cylinder', { name: 'Tower', material: 'stone_bricks', position: [0, 5, 0], scale: [6, 10, 6] }));
+  shapes.push(makeShape('dome', { name: 'Roof', material: 'spruce', position: [0, 12.5, 0], scale: [8, 5, 8] }));
+  shapes.push(makeShape('torus', { name: 'Ring', material: 'smooth_stone', position: [0, 9.6, 0], scale: [7.6, 7.6, 7.6] }));
+  shapes.push(makeShape('cylinder', { name: 'Hollow inside', mode: 'sub', position: [0, 5.5, 0], scale: [4.4, 9, 4.4] }));
+  shapes.push(makeShape('box', { name: 'Door', mode: 'sub', position: [0, 1.5, 3], scale: [2, 3, 2.5] }));
+  settings = defaultSettings();
+  built = new Set();
+}
+
+// ---------------------------------------------------------------- three.js setup
+const canvas = $('three-canvas');
+const viewport = $('viewport');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, preserveDrawingBuffer: true });
+renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(50, 1, 0.1, 4000);
+camera.position.set(20, 18, 26);
+const orbit = new OrbitControls(camera, canvas);
+orbit.target.set(0, 6, 0);
+orbit.enableDamping = true;
+
+scene.add(new THREE.HemisphereLight(0xffffff, 0x444455, 1.3));
+const sun = new THREE.DirectionalLight(0xffffff, 1.8);
+sun.position.set(12, 25, 9);
+scene.add(sun);
+
+let grid = null;
+function makeGrid() {
+  if (grid) { scene.remove(grid); grid.geometry.dispose(); }
+  const light = document.documentElement.dataset.resolvedTheme === 'light';
+  grid = new THREE.GridHelper(80, 80, light ? 0x9aa0aa : 0x3d4350, light ? 0xd0d4da : 0x262a32);
+  scene.add(grid);
+}
+
+const shapeGroup = new THREE.Group();
+scene.add(shapeGroup);
+const boundsHelper = new THREE.Box3Helper(new THREE.Box3(), 0x5cc96b);
+boundsHelper.visible = false;
+scene.add(boundsHelper);
+
+const tc = new TransformControls(camera, canvas);
+tc.setTranslationSnap(0.5); tc.setRotationSnap(15 * DEG); tc.setScaleSnap(0.25);
+scene.add(tc);
+tc.addEventListener('dragging-changed', (e) => { orbit.enabled = !e.value; });
+tc.addEventListener('objectChange', () => {
+  const s = selected();
+  if (!s) return;
+  readMesh(s);
+  fillProps();
+  updateDims();
+});
+tc.addEventListener('mouseUp', () => commit());
+
+const blockView = new BlockView(canvas);
+const layerView = new LayerView($('layer-canvas'), $('tooltip'));
+
+const meshes = new Map();
+const edgeCache = new Map();
+const edgeGeo = (type) => {
+  if (!edgeCache.has(type)) edgeCache.set(type, new THREE.EdgesGeometry(getGeometry(type), 25));
+  return edgeCache.get(type);
+};
+
+function buildMesh(s) {
+  const mesh = new THREE.Mesh(getGeometry(s.type), new THREE.MeshStandardMaterial({ roughness: 0.85 }));
+  mesh.userData.id = s.id;
+  const edges = new THREE.LineSegments(edgeGeo(s.type), new THREE.LineBasicMaterial({ transparent: true, opacity: 0.5 }));
+  edges.raycast = () => {};
+  mesh.add(edges);
+  mesh.userData.edges = edges;
+  shapeGroup.add(mesh);
+  meshes.set(s.id, mesh);
+  syncMesh(s);
+  return mesh;
+}
+
+function syncMesh(s) {
+  const mesh = meshes.get(s.id);
+  if (!mesh) return;
+  mesh.position.fromArray(s.position);
+  mesh.rotation.set(s.rotation[0] * DEG, s.rotation[1] * DEG, s.rotation[2] * DEG);
+  mesh.scale.fromArray(s.scale);
+  mesh.visible = s.visible;
+  const m = mesh.material, e = mesh.userData.edges.material;
+  const sel = s.id === selectedId;
+  if (s.mode === 'sub') {
+    m.color.set(0xff5a5a); m.transparent = true; m.opacity = 0.28; m.depthWrite = false;
+    mesh.renderOrder = 2;
+    e.color.set(sel ? 0xffc94a : 0xff5a5a); e.opacity = 0.9;
+  } else {
+    m.color.set(BLOCKS[blockIndex(s.material)].color); m.transparent = false; m.opacity = 1; m.depthWrite = true;
+    mesh.renderOrder = 0;
+    e.color.set(sel ? 0xffc94a : 0x000000); e.opacity = sel ? 1 : 0.25;
+  }
+  m.emissive.set(sel ? 0x2a2000 : 0x000000);
+  m.needsUpdate = true;
+}
+
+function readMesh(s) {
+  const mesh = meshes.get(s.id);
+  const r3 = (v) => Math.round(v * 1000) / 1000;
+  s.position = mesh.position.toArray().map(r3);
+  s.rotation = [mesh.rotation.x, mesh.rotation.y, mesh.rotation.z].map((v) => r3(v / DEG));
+  s.scale = mesh.scale.toArray().map(r3);
+}
+
+function rebuildMeshes() {
+  tc.detach();
+  for (const m of meshes.values()) { shapeGroup.remove(m); m.material.dispose(); m.userData.edges.material.dispose(); }
+  meshes.clear();
+  shapes.forEach(buildMesh);
+  if (selected()) tc.attach(meshes.get(selectedId)); else selectedId = null;
+}
+
+const selected = () => shapes.find((s) => s.id === selectedId) || null;
+
+// ---------------------------------------------------------------- bounds & size
+function computeBounds() {
+  const box = new THREE.Box3();
+  for (const s of shapes) {
+    if (!s.visible || s.mode !== 'add') continue;
+    const mesh = meshes.get(s.id);
+    mesh.updateMatrixWorld(true);
+    box.union(new THREE.Box3().setFromObject(mesh, true));
+  }
+  return box;
+}
+
+function scaleFor(size) {
+  const sz = size.toArray().map((v) => Math.max(v, 1e-6));
+  if (settings.sizeMode === 'scale') return [settings.bpu, settings.bpu, settings.bpu];
+  if (settings.keepProp) {
+    const s = settings.fitDims[settings.fitAxis] / sz[settings.fitAxis];
+    return [s, s, s];
+  }
+  return settings.fitDims.map((d, i) => d / sz[i]);
+}
+
+function dimsFor(box) {
+  if (box.isEmpty()) return null;
+  const size = box.getSize(new THREE.Vector3());
+  const sc = scaleFor(size);
+  return size.toArray().map((v, i) => Math.max(1, Math.round(v * sc[i])));
+}
+
+function updateDims() {
+  const box = computeBounds();
+  const dims = dimsFor(box);
+  boundsHelper.box.copy(box);
+  boundsHelper.visible = !!dims && $('show-bounds').checked && view === 'design';
+  ['dim-w', 'dim-h', 'dim-d'].forEach((id, i) => {
+    if (document.activeElement !== $(id)) $(id).value = dims ? dims[i] : '';
+  });
+  $('row-bpu').hidden = settings.sizeMode !== 'scale';
+  document.querySelectorAll('#size-mode button').forEach((b) => b.classList.toggle('active', b.dataset.mode === settings.sizeMode));
+  const help = $('help');
+  if (!dims) help.textContent = 'Add a solid shape to get started';
+  else {
+    const cells = dims[0] * dims[1] * dims[2];
+    help.textContent = `Build volume ${dims[0]} × ${dims[1]} × ${dims[2]} blocks` + (cells > MAX_CELLS ? ' — too large, reduce the size' : '') +
+      (view === 'design' ? '  ·  drag to orbit · right-drag pan · click to select' : view === 'blocks' ? '  ·  drag to orbit' : '  ·  drag to pan · wheel to zoom');
+  }
+  return dims;
+}
+
+// ---------------------------------------------------------------- conversion (Web Worker)
+let worker = null, jobId = 0, busy = false, convertTimer = 0, lastDims = null;
+
+function scheduleConvert() {
+  if (!settings.auto && view === 'design') return;
+  clearTimeout(convertTimer);
+  convertTimer = setTimeout(convert, 200);
+}
+
+function convert() {
+  clearTimeout(convertTimer);
+  const box = computeBounds();
+  const dims = dimsFor(box);
+  if (!dims) { setVoxels(null); return; }
+  if (dims[0] * dims[1] * dims[2] > MAX_CELLS) { $('help').textContent = 'Build volume too large to convert — lower the size.'; return; }
+  const size = box.getSize(new THREE.Vector3()).toArray();
+  const job = {
+    dims,
+    origin: box.min.toArray(),
+    cell: size.map((v, i) => v / dims[i]),
+    shapes: shapes.filter((s) => s.visible).map((s) => {
+      const mesh = meshes.get(s.id);
+      mesh.updateMatrixWorld(true);
+      const bb = new THREE.Box3().setFromObject(mesh, true).expandByScalar(1e-4);
+      return {
+        type: s.type, add: s.mode === 'add', mat: blockIndex(s.material),
+        inv: Array.from(mesh.matrixWorld.clone().invert().elements),
+        aabb: [...bb.min.toArray(), ...bb.max.toArray()],
+      };
+    }),
+    options: {
+      slabs: settings.slabs, topSlabs: settings.topSlabs, hollow: settings.hollow,
+      threshold: settings.threshold, quality: settings.quality, materialCount: BLOCKS.length,
+    },
+  };
+  if (busy && worker) { worker.terminate(); worker = null; }
+  if (!worker) {
+    worker = new Worker(new URL('./voxel-worker.js', import.meta.url), { type: 'module' });
+    worker.onmessage = onWorkerMessage;
+    worker.onerror = (e) => { busy = false; $('progress').hidden = true; console.error(e); $('help').textContent = 'Conversion failed: ' + (e.message || 'worker error'); };
+  }
+  busy = true;
+  const id = ++jobId;
+  $('progress').hidden = false; $('progress').firstElementChild.style.width = '0%';
+  worker.postMessage({ id, job });
+}
+
+function onWorkerMessage(e) {
+  const d = e.data;
+  if (d.id !== jobId) return;
+  if (d.progress !== undefined) { $('progress').firstElementChild.style.width = (d.progress * 100).toFixed(0) + '%'; return; }
+  busy = false;
+  $('progress').hidden = true;
+  if (d.error) { $('help').textContent = 'Conversion failed: ' + d.error; return; }
+  setVoxels(d.result);
+}
+
+function setVoxels(v) {
+  voxels = v;
+  if (!v) {
+    summary = null;
+    renderMaterials(); updateLayerUI();
+    return;
+  }
+  summary = summarize(v, BLOCKS.length);
+  const refit = !lastDims || lastDims.join() !== [v.W, v.H, v.D].join();
+  lastDims = [v.W, v.H, v.D];
+  layer = Math.min(layer, v.H - 1);
+  $('layer-slider').max = v.H - 1;
+  blockView.setVoxels(v, refit);
+  blockView.setLayer($('layer-all').checked ? v.H - 1 : layer);
+  layerView.setVoxels(v);
+  layerView.setLayer(layer);
+  updateLayerUI();
+  renderMaterials();
+}
+
+// ---------------------------------------------------------------- UI: shapes
+function renderShapeButtons() {
+  const wrap = $('shape-buttons');
+  wrap.innerHTML = '';
+  for (const t of SHAPE_TYPES) {
+    const b = document.createElement('button');
+    b.innerHTML = `<b>${t.icon}</b>${t.label}`;
+    b.title = `Add ${t.label.toLowerCase()}`;
+    b.onclick = () => addShape(t.type);
+    wrap.appendChild(b);
+  }
+}
+
+function addShape(type) {
+  const s = makeShape(type);
+  // drop it near what the camera is looking at
+  s.position[0] = Math.round(orbit.target.x * 2) / 2;
+  s.position[2] = Math.round(orbit.target.z * 2) / 2;
+  if (selected() && selected().mode === 'add') s.material = selected().material;
+  shapes.push(s);
+  buildMesh(s);
+  select(s.id);
+  commit();
+}
+
+function renderShapeList() {
+  const ul = $('shape-list');
+  ul.innerHTML = '';
+  if (!shapes.length) { ul.innerHTML = '<li class="empty">No shapes yet — add one above.</li>'; return; }
+  shapes.forEach((s, idx) => {
+    const li = document.createElement('li');
+    li.className = (s.id === selectedId ? 'sel ' : '') + (s.visible ? '' : 'hidden-shape');
+    const color = s.mode === 'sub' ? 'transparent' : BLOCKS[blockIndex(s.material)].color;
+    const border = s.mode === 'sub' ? 'border:1px dashed var(--sub)' : '';
+    li.innerHTML = `
+      <span class="sw" style="background:${color};${border}"></span>
+      <span class="nm"></span>
+      ${s.mode === 'sub' ? '<span class="badge">carve</span>' : ''}
+      <button class="icon-btn" data-act="up" title="Move up">↑</button>
+      <button class="icon-btn" data-act="down" title="Move down">↓</button>
+      <button class="icon-btn" data-act="vis" title="${s.visible ? 'Hide (excluded from build)' : 'Show'}">${s.visible ? '👁' : '◌'}</button>`;
+    li.querySelector('.nm').textContent = s.name;
+    li.onclick = (e) => {
+      const act = e.target.dataset && e.target.dataset.act;
+      if (act === 'vis') { s.visible = !s.visible; syncMesh(s); renderShapeList(); updateDims(); commit(); return; }
+      if (act === 'up' && idx > 0) { [shapes[idx - 1], shapes[idx]] = [shapes[idx], shapes[idx - 1]]; renderShapeList(); commit(); return; }
+      if (act === 'down' && idx < shapes.length - 1) { [shapes[idx + 1], shapes[idx]] = [shapes[idx], shapes[idx + 1]]; renderShapeList(); commit(); return; }
+      if (!act) select(s.id);
+    };
+    ul.appendChild(li);
+  });
+}
+
+function select(id) {
+  const prev = selectedId;
+  selectedId = id;
+  for (const s of shapes) if (s.id === prev || s.id === id) syncMesh(s);
+  const s = selected();
+  if (s && view === 'design') tc.attach(meshes.get(s.id)); else tc.detach();
+  renderShapeList();
+  fillProps();
+}
+
+function fillProps() {
+  const s = selected();
+  $('props').hidden = !s;
+  if (!s) return;
+  const set = (el, v) => { if (document.activeElement !== el) el.value = v; };
+  set($('p-name'), s.name);
+  $('p-mode').value = s.mode;
+  $('p-mat').value = s.material;
+  $('p-mat').disabled = s.mode === 'sub';
+  document.querySelectorAll('[data-vec]').forEach((el) => set(el, s[el.dataset.vec][+el.dataset.i]));
+}
+
+function initProps() {
+  const sel = $('p-mat');
+  for (const b of BLOCKS) {
+    const o = document.createElement('option');
+    o.value = b.id; o.textContent = b.name;
+    sel.appendChild(o);
+  }
+  $('p-name').addEventListener('input', (e) => { const s = selected(); if (s) { s.name = e.target.value; renderShapeList(); } });
+  $('p-name').addEventListener('change', () => commit());
+  $('p-mode').addEventListener('change', (e) => { const s = selected(); if (!s) return; s.mode = e.target.value; syncMesh(s); renderShapeList(); fillProps(); updateDims(); commit(); });
+  $('p-mat').addEventListener('change', (e) => { const s = selected(); if (!s) return; s.material = e.target.value; syncMesh(s); renderShapeList(); commit(); });
+  document.querySelectorAll('[data-vec]').forEach((el) => {
+    el.addEventListener('input', () => {
+      const s = selected(); if (!s) return;
+      const v = parseFloat(el.value);
+      if (!Number.isFinite(v)) return;
+      if (el.dataset.vec === 'scale' && Math.abs(v) < 0.05) return;
+      s[el.dataset.vec][+el.dataset.i] = v;
+      syncMesh(s); updateDims();
+    });
+    el.addEventListener('change', () => commit());
+  });
+  $('p-dup').onclick = () => duplicate(false);
+  $('p-mirror').onclick = () => duplicate(true);
+  $('p-del').onclick = deleteSelected;
+}
+
+function duplicate(mirror) {
+  const s = selected(); if (!s) return;
+  const c = JSON.parse(JSON.stringify(s));
+  c.id = nextId++;
+  if (mirror) {
+    // reflect across the x = 0 plane: flip x position, x scale, and y/z rotation
+    c.name = s.name + ' (mirror)';
+    c.position[0] = -c.position[0];
+    c.scale[0] = -c.scale[0];
+    c.rotation[1] = -c.rotation[1];
+    c.rotation[2] = -c.rotation[2];
+  } else {
+    c.name = s.name + ' copy';
+    c.position[0] += 1; c.position[2] += 1;
+  }
+  shapes.splice(shapes.indexOf(s) + 1, 0, c);
+  buildMesh(c);
+  select(c.id);
+  commit();
+}
+
+function deleteSelected() {
+  const s = selected(); if (!s) return;
+  tc.detach();
+  const m = meshes.get(s.id);
+  shapeGroup.remove(m); m.material.dispose();
+  meshes.delete(s.id);
+  shapes = shapes.filter((x) => x !== s);
+  selectedId = null;
+  renderShapeList(); fillProps(); updateDims();
+  commit();
+}
+
+// ---------------------------------------------------------------- UI: settings
+function initSettings() {
+  document.querySelectorAll('#size-mode button').forEach((b) => b.onclick = () => {
+    if (settings.sizeMode === b.dataset.mode) return;
+    const dims = updateDims();
+    settings.sizeMode = b.dataset.mode;
+    if (dims && b.dataset.mode === 'fit') settings.fitDims = dims;
+    if (dims && b.dataset.mode === 'scale') {
+      const size = computeBounds().getSize(new THREE.Vector3()).toArray();
+      settings.bpu = Math.round((dims[settings.fitAxis] / size[settings.fitAxis]) * 100) / 100;
+    }
+    applySettingsUI(); updateDims(); commit();
+  });
+  $('bpu').addEventListener('change', (e) => {
+    const v = parseFloat(e.target.value);
+    if (v > 0) { settings.bpu = v; updateDims(); commit(); }
+  });
+  ['dim-w', 'dim-h', 'dim-d'].forEach((id, axis) => $(id).addEventListener('change', (e) => {
+    const v = Math.max(1, Math.round(parseFloat(e.target.value) || 1));
+    const cur = updateDims() || settings.fitDims;
+    settings.sizeMode = 'fit';
+    settings.fitAxis = axis;
+    settings.fitDims = [...cur];
+    settings.fitDims[axis] = v;
+    applySettingsUI(); updateDims(); commit();
+  }));
+  $('keep-prop').onchange = (e) => {
+    settings.keepProp = e.target.checked;
+    const dims = updateDims();
+    if (dims) settings.fitDims = dims;
+    updateDims(); commit();
+  };
+  document.querySelectorAll('.presets [data-mult]').forEach((b) => b.onclick = () => {
+    const k = parseFloat(b.dataset.mult);
+    if (settings.sizeMode === 'scale') settings.bpu = Math.round(settings.bpu * k * 100) / 100;
+    else settings.fitDims = settings.fitDims.map((d) => Math.max(1, Math.round(d * k)));
+    applySettingsUI(); updateDims(); commit();
+  });
+  const bind = (id, key, conv = (el) => el.checked) => $(id).addEventListener('change', (e) => { settings[key] = conv(e.target); applySettingsUI(); commit(); });
+  bind('opt-slabs', 'slabs');
+  bind('opt-topslabs', 'topSlabs');
+  bind('opt-hollow', 'hollow');
+  bind('opt-quality', 'quality', (el) => el.value);
+  bind('opt-auto', 'auto');
+  $('opt-threshold').addEventListener('input', (e) => { $('out-threshold').textContent = Math.round(e.target.value * 100) + '%'; });
+  bind('opt-threshold', 'threshold', (el) => parseFloat(el.value));
+  $('btn-convert').onclick = convert;
+}
+
+function applySettingsUI() {
+  $('bpu').value = settings.bpu;
+  $('keep-prop').checked = settings.keepProp;
+  $('opt-slabs').checked = settings.slabs;
+  $('opt-topslabs').checked = settings.topSlabs;
+  $('opt-topslabs').disabled = !settings.slabs;
+  $('opt-hollow').checked = settings.hollow;
+  $('opt-quality').value = settings.quality;
+  $('opt-auto').checked = settings.auto;
+  $('opt-threshold').value = settings.threshold;
+  $('out-threshold').textContent = Math.round(settings.threshold * 100) + '%';
+}
+
+// ---------------------------------------------------------------- UI: layers & materials
+function setLayer(y, fromSlider = false) {
+  if (!voxels) return;
+  layer = Math.max(0, Math.min(voxels.H - 1, y));
+  if (fromSlider && view === 'blocks') $('layer-all').checked = false;
+  blockView.setLayer($('layer-all').checked ? voxels.H - 1 : layer);
+  layerView.setLayer(layer);
+  updateLayerUI();
+}
+
+function updateLayerUI() {
+  const v = voxels;
+  $('layer-slider').disabled = !v;
+  if (!v) { $('layer-info').textContent = 'Convert to see layers.'; $('layer-y').textContent = ''; return; }
+  $('layer-slider').value = layer;
+  const pl = summary.perLayer[layer];
+  $('layer-y').textContent = `${layer + 1} / ${v.H}`;
+  const doneCount = [...built].filter((y) => y < v.H).length;
+  $('layer-info').innerHTML = `Layer <b>${layer + 1}</b> (y +${layer}) · <b>${pl.full}</b> blocks · <b>${pl.slab}</b> slabs` +
+    (built.has(layer) ? ' · ✅ built' : '') + `<br><small>${doneCount} of ${v.H} layers marked built</small>`;
+  $('layer-built').checked = built.has(layer);
+}
+
+function renderMaterials() {
+  const ul = $('materials');
+  ul.innerHTML = '';
+  if (!summary) { $('stats').textContent = ''; return; }
+  const { full, slab, perMat } = summary;
+  $('stats').innerHTML = `<b>${(full + slab).toLocaleString()}</b> pieces · ${full.toLocaleString()} blocks + ${slab.toLocaleString()} slabs<br>` +
+    `≈ ${((full + Math.ceil(slab / 2)) / 1728).toFixed(2)} shulker boxes of raw blocks`;
+  perMat.forEach((m, i) => {
+    if (!m.full && !m.slab) return;
+    const b = BLOCKS[i];
+    const li = document.createElement('li');
+    const parts = [];
+    if (m.full) parts.push(`${m.full} blocks <small>${stacks(m.full)}</small>`);
+    if (m.slab) parts.push(`${m.slab} slabs <small>${stacks(m.slab)} · craft from ${Math.ceil(m.slab / 2)} blocks</small>`);
+    li.innerHTML = `<span class="sw" style="background:${b.color}"></span><div><b>${b.name}</b><br>${parts.join('<br>')}</div>`;
+    ul.appendChild(li);
+  });
+}
+
+function initLayers() {
+  $('layer-slider').addEventListener('input', (e) => setLayer(+e.target.value, true));
+  $('layer-up').onclick = () => setLayer(layer + 1, true);
+  $('layer-down').onclick = () => setLayer(layer - 1, true);
+  $('layer-built').onchange = (e) => { if (e.target.checked) built.add(layer); else built.delete(layer); updateLayerUI(); save(); };
+  $('layer-ghost').onchange = (e) => { layerView.ghost = e.target.checked; layerView.draw(); };
+  $('layer-all').onchange = () => { if (voxels) blockView.setLayer($('layer-all').checked ? voxels.H - 1 : layer); };
+  $('layer-all').checked = true;
+}
+
+// ---------------------------------------------------------------- views
+function setView(v) {
+  view = v;
+  document.querySelectorAll('.tab').forEach((t) => t.classList.toggle('active', t.dataset.view === v));
+  $('layer-wrap').hidden = v !== 'layers';
+  $('gizmo-bar').hidden = v !== 'design';
+  orbit.enabled = v === 'design';
+  blockView.controls.enabled = v === 'blocks';
+  tc.enabled = v === 'design';
+  if (v === 'design' && selected()) tc.attach(meshes.get(selectedId)); else tc.detach();
+  if (v !== 'design' && (!voxels || !settings.auto)) convert();
+  if (v === 'layers') { layerView.resize(); }
+  updateDims();
+}
+
+function initViews() {
+  document.querySelectorAll('.tab').forEach((t) => t.onclick = () => setView(t.dataset.view));
+  document.querySelectorAll('[data-gizmo]').forEach((b) => b.onclick = () => setGizmo(b.dataset.gizmo));
+  $('snap').onchange = (e) => {
+    const on = e.target.checked;
+    tc.setTranslationSnap(on ? 0.5 : null); tc.setRotationSnap(on ? 15 * DEG : null); tc.setScaleSnap(on ? 0.25 : null);
+  };
+  $('show-bounds').onchange = updateDims;
+  $('btn-undo').onclick = undo;
+  $('btn-redo').onclick = redo;
+  $('btn-frame').onclick = frameDesign;
+
+  // click-to-select
+  const ray = new THREE.Raycaster();
+  let down = null;
+  canvas.addEventListener('pointerdown', (e) => { down = { x: e.clientX, y: e.clientY }; });
+  canvas.addEventListener('pointerup', (e) => {
+    if (view !== 'design' || !down || e.button !== 0) return;
+    if (Math.hypot(e.clientX - down.x, e.clientY - down.y) > 4 || tc.dragging || tc.axis) return;
+    const r = canvas.getBoundingClientRect();
+    ray.setFromCamera(new THREE.Vector2(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1), camera);
+    const hits = ray.intersectObjects([...meshes.values()].filter((m) => m.visible), false);
+    select(hits.length ? hits[0].object.userData.id : null);
+  });
+
+  new ResizeObserver(resize).observe(viewport);
+}
+
+function setGizmo(mode) {
+  tc.setMode(mode);
+  tc.setSpace(mode === 'translate' ? 'world' : 'local');
+  document.querySelectorAll('[data-gizmo]').forEach((b) => b.classList.toggle('active', b.dataset.gizmo === mode));
+}
+
+function frameDesign() {
+  const s = selected();
+  const box = s ? new THREE.Box3().setFromObject(meshes.get(s.id), true) : computeBounds();
+  if (box.isEmpty()) return;
+  const c = box.getCenter(new THREE.Vector3()), r = box.getSize(new THREE.Vector3()).length();
+  const dir = camera.position.clone().sub(orbit.target).normalize();
+  orbit.target.copy(c);
+  camera.position.copy(c).addScaledVector(dir, Math.max(4, r * 1.4));
+}
+
+function resize() {
+  const w = viewport.clientWidth, h = viewport.clientHeight;
+  if (!w || !h) return;
+  renderer.setSize(w, h, false);
+  camera.aspect = w / h; camera.updateProjectionMatrix();
+  blockView.resize(w, h);
+}
+
+function loop() {
+  requestAnimationFrame(loop);
+  if (view === 'design') { orbit.update(); renderer.render(scene, camera); }
+  else if (view === 'blocks') { blockView.update(); renderer.render(blockView.scene, blockView.camera); }
+}
+
+// ---------------------------------------------------------------- history & storage
+let history = [], hIndex = -1;
+const snapshot = () => JSON.stringify({ shapes, settings });
+
+function commit() {
+  const s = snapshot();
+  if (history[hIndex] !== s) {
+    history = history.slice(0, hIndex + 1);
+    history.push(s);
+    if (history.length > 150) history.shift();
+    hIndex = history.length - 1;
+  }
+  save();
+  updateDims();
+  scheduleConvert();
+}
+
+function restore(json) {
+  const d = JSON.parse(json);
+  shapes = d.shapes; settings = { ...defaultSettings(), ...d.settings };
+  nextId = shapes.reduce((m, s) => Math.max(m, s.id), 0) + 1;
+  rebuildMeshes(); applySettingsUI(); renderShapeList(); fillProps(); updateDims();
+  save(); scheduleConvert();
+}
+function undo() { if (hIndex > 0) { hIndex--; restore(history[hIndex]); } }
+function redo() { if (hIndex < history.length - 1) { hIndex++; restore(history[hIndex]); } }
+
+function save() {
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify({ version: 1, shapes, settings, built: [...built] })); } catch { /* storage unavailable */ }
+}
+
+function loadProject(d) {
+  if (!d || !Array.isArray(d.shapes)) throw new Error('Not a Shape Layers project');
+  shapes = d.shapes.map((s) => ({ visible: true, mode: 'add', material: 'stone', rotation: [0, 0, 0], ...s }));
+  settings = { ...defaultSettings(), ...(d.settings || {}) };
+  built = new Set(d.built || []);
+  nextId = shapes.reduce((m, s) => Math.max(m, s.id || 0), 0) + 1;
+  shapes.forEach((s) => { if (!s.id) s.id = nextId++; });
+  selectedId = null;
+  lastDims = null;
+}
+
+function initFile() {
+  $('btn-new').onclick = () => {
+    if (!confirm('Start a new project? Unsaved changes in this one will be replaced.')) return;
+    shapes = []; settings = defaultSettings(); built = new Set(); selectedId = null; nextId = 1; lastDims = null;
+    rebuildMeshes(); applySettingsUI(); renderShapeList(); fillProps(); setVoxels(null); commit();
+  };
+  $('btn-save').onclick = () => download('shape-layers-project.json', JSON.stringify({ version: 1, shapes, settings, built: [...built] }, null, 2), 'application/json');
+  $('btn-open').onclick = () => $('file-input').click();
+  $('file-input').onchange = async (e) => {
+    const f = e.target.files[0]; if (!f) return;
+    try {
+      loadProject(JSON.parse(await f.text()));
+      rebuildMeshes(); applySettingsUI(); renderShapeList(); fillProps(); commit(); frameDesign();
+    } catch (err) { alert('Could not open file: ' + err.message); }
+    e.target.value = '';
+  };
+
+  const menu = $('export-menu');
+  $('btn-export').onclick = (e) => { e.stopPropagation(); menu.hidden = !menu.hidden; };
+  document.addEventListener('click', () => { menu.hidden = true; });
+  menu.querySelectorAll('[data-export]').forEach((b) => b.onclick = () => doExport(b.dataset.export));
+
+  $('btn-theme').onclick = () => {
+    const next = document.documentElement.dataset.resolvedTheme === 'light' ? 'dark' : 'light';
+    try { localStorage.setItem('shape-layers:theme', next); } catch { /* ignore */ }
+    applyTheme(next);
+  };
+}
+
+async function doExport(kind) {
+  $('export-menu').hidden = true;
+  if (!voxels) { convert(); alert('Converting first — try the export again in a moment.'); return; }
+  const v = voxels, base = `shape-layers-${v.W}x${v.H}x${v.D}`;
+  if (kind === 'mcfunction') download(base + '.mcfunction', toMcfunction(v), 'text/plain');
+  if (kind === 'schem') download(base + '.schem', await toSchem(v));
+  if (kind === 'materials') download(base + '-materials.csv', materialList(summary), 'text/csv');
+  if (kind === 'layer-png') renderLayerImage(layer).toBlob((b) => download(`${base}-layer-${layer + 1}.png`, b));
+  if (kind === 'sheet') openLayerSheet();
+}
+
+function renderLayerImage(y, maxPx = 1600) {
+  const v = voxels;
+  const cs = Math.max(6, Math.min(28, Math.floor(maxPx / Math.max(v.W, v.D))));
+  const pad = 30;
+  const c = document.createElement('canvas');
+  c.width = v.W * cs + pad * 2; c.height = v.D * cs + pad * 2 + 18;
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, c.width, c.height);
+  drawLayer(ctx, v, y, { cs, ox: pad, oy: pad + 18, ghost: true, theme: LIGHT_THEME });
+  ctx.fillStyle = '#222'; ctx.font = 'bold 14px system-ui, sans-serif'; ctx.textBaseline = 'top';
+  const pl = summary.perLayer[y];
+  ctx.fillText(`Layer ${y + 1} / ${v.H}  (y +${y})   ${pl.full} blocks, ${pl.slab} slabs   N ↑`, pad, 8);
+  return c;
+}
+
+function openLayerSheet() {
+  const w = window.open('', '_blank');
+  if (!w) { alert('Allow pop-ups to open the layer sheet.'); return; }
+  const v = voxels;
+  const imgs = [];
+  for (let y = 0; y < v.H; y++) {
+    const pl = summary.perLayer[y];
+    if (!pl.full && !pl.slab) continue;
+    imgs.push(`<figure><img src="${renderLayerImage(y, 700).toDataURL()}" alt="Layer ${y + 1}"></figure>`);
+  }
+  const mats = summary.perMat.map((m, i) => (m.full || m.slab) ? `<li>${BLOCKS[i].name}: ${m.full} blocks, ${m.slab} slabs</li>` : '').join('');
+  w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Layer sheet ${v.W}x${v.H}x${v.D}</title>
+<style>body{font:14px system-ui,sans-serif;margin:24px;color:#222;background:#fff}figure{display:inline-block;margin:0 12px 16px 0;break-inside:avoid;vertical-align:top}img{max-width:100%;border:1px solid #ddd}
+@media print{button{display:none}}</style></head><body>
+<h1>Layer sheet — ${v.W} × ${v.H} × ${v.D}</h1><p>Full blocks are solid. Slabs: half bar at the bottom of a cell = bottom slab (b), at the top = top slab (t). Grey = layer below. North is up.</p>
+<ul>${mats}</ul><button onclick="print()">Print</button><div>${imgs.join('')}</div></body></html>`);
+  w.document.close();
+}
+
+// ---------------------------------------------------------------- theme & keys
+function applyTheme(t) {
+  document.documentElement.dataset.resolvedTheme = t;
+  const bg = t === 'light' ? 0xeef0f3 : 0x121418;
+  scene.background = new THREE.Color(bg);
+  blockView.scene.background = new THREE.Color(t === 'light' ? 0xdfe8ef : 0x15181d);
+  makeGrid();
+  layerView.draw();
+}
+
+function initKeys() {
+  window.addEventListener('keydown', (e) => {
+    const typing = /INPUT|SELECT|TEXTAREA/.test(document.activeElement.tagName) && document.activeElement.type !== 'range' && document.activeElement.type !== 'checkbox';
+    const mod = e.ctrlKey || e.metaKey;
+    if (mod && e.key.toLowerCase() === 'z' && !typing) { e.preventDefault(); e.shiftKey ? redo() : undo(); return; }
+    if (mod && e.key.toLowerCase() === 'y' && !typing) { e.preventDefault(); redo(); return; }
+    if (mod && e.key.toLowerCase() === 'd' && !typing) { e.preventDefault(); duplicate(false); return; }
+    if (typing || mod) return;
+    const k = e.key.toLowerCase();
+    if (k === '1') setView('design');
+    else if (k === '2') setView('blocks');
+    else if (k === '3') setView('layers');
+    else if (view === 'design' && k === 'w') setGizmo('translate');
+    else if (view === 'design' && k === 'e') setGizmo('rotate');
+    else if (view === 'design' && k === 'r') setGizmo('scale');
+    else if (view === 'design' && k === 'f') frameDesign();
+    else if (view === 'design' && (k === 'delete' || k === 'backspace')) deleteSelected();
+    else if (view === 'design' && k === 'escape') select(null);
+    else if (e.key === 'PageUp' || (view === 'layers' && e.key === 'ArrowUp')) { e.preventDefault(); setLayer(layer + 1, true); }
+    else if (e.key === 'PageDown' || (view === 'layers' && e.key === 'ArrowDown')) { e.preventDefault(); setLayer(layer - 1, true); }
+  });
+}
+
+// ---------------------------------------------------------------- boot
+(function boot() {
+  let theme = null;
+  try { theme = localStorage.getItem('shape-layers:theme'); } catch { /* ignore */ }
+  applyTheme(theme || (matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark'));
+
+  let loaded = false;
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (raw) { loadProject(JSON.parse(raw)); loaded = true; }
+  } catch { /* fall back to default */ }
+  if (!loaded) defaultProject();
+
+  renderShapeButtons();
+  initProps(); initSettings(); initLayers(); initViews(); initFile(); initKeys();
+  rebuildMeshes(); applySettingsUI(); renderShapeList(); fillProps();
+  resize();
+  commit();
+  convert();
+  loop();
+})();
