@@ -177,3 +177,39 @@ h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: v
   .topbar { flex-wrap: wrap; }
   .tabs { order: 3; width: 100%; }
 }
+
+/* --- dims fix, params, repeat, hall dialog --- */
+.dims label, .repeat label { min-width: 0; }
+.dims input, .repeat input, .repeat select { width: 100%; }
+.sub-h { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; margin: 10px 0 4px; }
+.repeat { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+.repeat label { display: flex; flex-direction: column; gap: 2px; font-size: 11px; color: var(--muted); }
+.repeat input, .repeat select { color: var(--text); }
+.param { margin: 6px 0; }
+.param .top { display: flex; justify-content: space-between; gap: 6px; align-items: center; }
+.param input[type="range"] { width: 100%; }
+.param input[type="number"] { width: 70px; }
+.param small { color: var(--muted); display: block; }
+.chk.indent { margin-left: 20px; }
+.chk input:disabled + * , .chk:has(input:disabled) { opacity: .5; }
+.legend .sw { font-size: 9px; line-height: 13px; text-align: center; font-style: normal; color: #fff; font-weight: 700; }
+.legend .bottom { background: rgba(138,138,138,.45); }
+.legend .top { background: rgba(138,138,138,.7); }
+.legend .stair { background: linear-gradient(to bottom, #8a8a8a 50%, rgba(138,138,138,.4) 50%); }
+.legend .stair.upside { outline: 2px solid #ff6b9a; outline-offset: -2px; }
+
+dialog {
+  background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 12px;
+  padding: 18px 20px; max-width: min(640px, calc(100vw - 32px)); box-shadow: 0 20px 60px rgba(0,0,0,.5);
+}
+dialog::backdrop { background: rgba(0,0,0,.45); }
+dialog h3 { margin: 0 0 4px; }
+.muted { color: var(--muted); margin: 4px 0 12px; }
+.hall-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+fieldset { border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; margin: 0; min-width: 0; }
+legend { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .06em; padding: 0 4px; }
+fieldset label { display: grid; grid-template-columns: 1fr 90px auto; align-items: center; gap: 6px; margin: 5px 0; }
+fieldset label.chk { display: flex; }
+fieldset output { min-width: 26px; color: var(--muted); }
+fieldset input[type="number"], fieldset select { width: 100%; }
+@media (max-width: 600px) { .hall-grid { grid-template-columns: 1fr; } }

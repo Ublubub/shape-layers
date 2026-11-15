@@ -1,6 +1,26 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { BLOCKS, FULL, BOTTOM } from './blocks.js';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+import { BLOCKS, FULL, BOTTOM, STAIR } from './blocks.js';
+
+// Geometry for a stair from its octant mask (bit = x + 2*z + 4*y). Bottom/top half is one slab box.
+const stairCache = new Map();
+function stairGeometry(mask) {
+  if (stairCache.has(mask)) return stairCache.get(mask);
+  const parts = [];
+  const low = mask & 0xf, high = (mask >> 4) & 0xf;
+  const slabY = low === 0xf ? -0.25 : 0.25;
+  const partBits = low === 0xf ? high : low;
+  const partY = low === 0xf ? 0.25 : -0.25;
+  parts.push(new THREE.BoxGeometry(1, 0.5, 1).translate(0, slabY, 0));
+  for (let q = 0; q < 4; q++) {
+    if ((partBits >> q) & 1) parts.push(new THREE.BoxGeometry(0.5, 0.5, 0.5).translate((q & 1) ? 0.25 : -0.25, partY, (q >> 1) ? 0.25 : -0.25));
+  }
+  const g = mergeGeometries(parts);
+  parts.forEach((p) => p.dispose());
+  stairCache.set(mask, g);
+  return g;
+}
 
 function blockTexture() {
   const c = document.createElement('canvas');
@@ -81,7 +101,7 @@ export class BlockView {
     const clipped = top < H - 1;
     const isFull = (i) => kind[i] === FULL;
 
-    const fulls = [], slabs = [];
+    const fulls = [], slabs = [], stairs = new Map();
     for (let y = 0; y <= top; y++) {
       for (let z = 0; z < D; z++) {
         for (let x = 0; x < W; x++) {
@@ -91,7 +111,11 @@ export class BlockView {
           // skip fully hidden blocks
           if (k === FULL && x > 0 && x < W - 1 && z > 0 && z < D - 1 && y > 0 && y < top &&
               isFull(i - 1) && isFull(i + 1) && isFull(i - W) && isFull(i + W) && isFull(i - WD) && isFull(i + WD)) continue;
-          (k === FULL ? fulls : slabs).push(i);
+          if (k === STAIR) {
+            const m = v.meta[i];
+            if (!stairs.has(m)) stairs.set(m, []);
+            stairs.get(m).push(i);
+          } else (k === FULL ? fulls : slabs).push(i);
         }
       }
     }
@@ -99,13 +123,13 @@ export class BlockView {
     const m4 = new THREE.Matrix4();
     const col = new THREE.Color();
     const colors = BLOCKS.map((b) => new THREE.Color(b.color));
-    const make = (list, geo, isSlab) => {
+    const make = (list, geo, kindOf) => {
       if (!list.length) return;
       const mesh = new THREE.InstancedMesh(geo, this.material, list.length);
       list.forEach((i, n) => {
         const y = Math.floor(i / WD), r = i - y * WD, z = Math.floor(r / W), x = r - z * W;
         let yy = y + 0.5;
-        if (isSlab) yy = kind[i] === BOTTOM ? y + 0.25 : y + 0.75;
+        if (kindOf === 'slab') yy = kind[i] === BOTTOM ? y + 0.25 : y + 0.75;
         m4.makeTranslation(x - W / 2 + 0.5, yy, z - D / 2 + 0.5);
         mesh.setMatrixAt(n, m4);
         col.copy(colors[mat[i]]);
@@ -117,8 +141,9 @@ export class BlockView {
       this.scene.add(mesh);
       this.meshes.push(mesh);
     };
-    make(fulls, this.fullGeo, false);
-    make(slabs, this.slabGeo, true);
+    make(fulls, this.fullGeo, 'full');
+    make(slabs, this.slabGeo, 'slab');
+    for (const [m, list] of stairs) make(list, stairGeometry(m), 'stair');
 
     if (clipped) {
       const g = new THREE.EdgesGeometry(new THREE.BoxGeometry(W, 1, D));

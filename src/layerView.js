@@ -1,4 +1,16 @@
-import { BLOCKS, FULL, BOTTOM, TOP } from './blocks.js';
+import { BLOCKS, FULL, BOTTOM, STAIR, stairInfo, blockLabel } from './blocks.js';
+
+const DIRS = { north: [0, -1], south: [0, 1], east: [1, 0], west: [-1, 0] };
+function drawArrow(ctx, x, y, r, facing, color) {
+  const [dx, dy] = DIRS[facing];
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  ctx.moveTo(x + dx * r, y + dy * r);
+  ctx.lineTo(x - dx * r * 0.6 - dy * r * 0.7, y - dy * r * 0.6 + dx * r * 0.7);
+  ctx.lineTo(x - dx * r * 0.6 + dy * r * 0.7, y - dy * r * 0.6 - dx * r * 0.7);
+  ctx.closePath();
+  ctx.fill();
+}
 
 // Draw one layer (top-down, north = up, x to the right, z downward) into a 2D context.
 export function drawLayer(ctx, v, y, opts) {
@@ -26,22 +38,38 @@ export function drawLayer(ctx, v, y, opts) {
       if (!k) continue;
       const px = ox + x * cs, py = oy + z * cs;
       const col = BLOCKS[mat[i]].color;
+      ctx.fillStyle = col;
       if (k === FULL) {
-        ctx.fillStyle = col;
         ctx.fillRect(px, py, cs, cs);
-      } else {
-        // slab: tinted cell + a half bar marking bottom (lower half) or top (upper half)
-        ctx.fillStyle = col;
-        ctx.globalAlpha = 0.35;
+      } else if (k === STAIR) {
+        // stair: tinted cell, the full-height quarters solid, arrow toward facing
+        const m = v.meta[i];
+        ctx.globalAlpha = 0.4;
         ctx.fillRect(px, py, cs, cs);
         ctx.globalAlpha = 1;
         const h = cs / 2;
-        ctx.fillRect(px, k === BOTTOM ? py + h : py, cs, h);
+        for (let qi = 0; qi < 4; qi++) {
+          if ((m >> qi) & 1 && (m >> (qi + 4)) & 1) ctx.fillRect(px + (qi & 1) * h, py + (qi >> 1) * h, h, h);
+        }
+        const s = stairInfo(m);
+        if (s.half === 'top' && cs >= 6) {
+          ctx.strokeStyle = theme.center; ctx.lineWidth = Math.max(1, cs / 12);
+          ctx.strokeRect(px + ctx.lineWidth / 2, py + ctx.lineWidth / 2, cs - ctx.lineWidth, cs - ctx.lineWidth);
+        }
+        if (cs >= 12) drawArrow(ctx, px + h, py + h, cs * 0.3, s.facing, theme.slabMark);
+      } else {
+        // slab: tinted cell with a "b" (bottom) or "t" (top)
+        ctx.globalAlpha = k === BOTTOM ? 0.45 : 0.7;
+        ctx.fillRect(px, py, cs, cs);
+        ctx.globalAlpha = 1;
         if (cs >= 10) {
-          ctx.fillStyle = theme.slabMark;
-          ctx.font = `bold ${Math.floor(cs * 0.45)}px system-ui, sans-serif`;
+          ctx.fillStyle = theme.slabText;
+          ctx.font = `bold ${Math.floor(cs * 0.5)}px system-ui, sans-serif`;
           ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-          ctx.fillText(k === BOTTOM ? 'b' : 't', px + cs / 2, py + (k === BOTTOM ? h * 1.5 : h * 0.5));
+          ctx.fillText(k === BOTTOM ? 'b' : 't', px + cs / 2, py + cs / 2 + 1);
+        } else {
+          ctx.fillStyle = theme.slabText;
+          ctx.fillRect(px + cs * 0.3, py + (k === BOTTOM ? cs * 0.6 : cs * 0.2), cs * 0.4, cs * 0.2);
         }
       }
     }
@@ -71,11 +99,11 @@ export function drawLayer(ctx, v, y, opts) {
 
 export const LIGHT_THEME = {
   bg: '#ffffff', ghost: 'rgba(0,0,0,0.10)', grid: 'rgba(0,0,0,0.12)', grid5: 'rgba(0,0,0,0.3)',
-  grid10: 'rgba(0,0,0,0.6)', center: '#e0457b', slabMark: 'rgba(255,255,255,0.9)',
+  grid10: 'rgba(0,0,0,0.6)', center: '#e0457b', slabMark: 'rgba(255,255,255,0.95)', slabText: 'rgba(0,0,0,0.7)',
 };
 export const DARK_THEME = {
   bg: '#1b1d22', ghost: 'rgba(255,255,255,0.10)', grid: 'rgba(255,255,255,0.08)', grid5: 'rgba(255,255,255,0.22)',
-  grid10: 'rgba(255,255,255,0.45)', center: '#ff6b9a', slabMark: 'rgba(255,255,255,0.9)',
+  grid10: 'rgba(255,255,255,0.45)', center: '#ff6b9a', slabMark: 'rgba(255,255,255,0.95)', slabText: 'rgba(255,255,255,0.85)',
 };
 
 export class LayerView {
@@ -167,7 +195,7 @@ export class LayerView {
     if (x < 0 || z < 0 || x >= this.v.W || z >= this.v.D) { this.tooltip.hidden = true; return; }
     const i = x + z * this.v.W + this.layer * this.v.W * this.v.D;
     const k = this.v.kind[i];
-    const name = k ? BLOCKS[this.v.mat[i]].name + (k === FULL ? '' : k === BOTTOM ? ' slab (bottom)' : ' slab (top)') : 'air';
+    const name = k ? blockLabel(this.v.mat[i], k, this.v.meta[i]) : 'air';
     this.tooltip.textContent = `x ${x}, z ${z} — ${name}`;
     this.tooltip.hidden = false;
     this.tooltip.style.left = (e.clientX - r.left + 14) + 'px';
@@ -175,4 +203,3 @@ export class LayerView {
   }
 }
 
-export { TOP };

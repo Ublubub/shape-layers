@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { TransformControls } from 'three/addons/controls/TransformControls.js';
-import { SHAPE_TYPES, getGeometry } from './shapes.js';
+import { SHAPE_TYPES, typeDef, defaultParams, voxelParams, buildGeometry, geometryKey, isSharedGeometry } from './shapes.js';
 import { BLOCKS, blockIndex } from './blocks.js';
 import { summarize } from './voxelizer.js';
 import { LayerView, drawLayer, LIGHT_THEME } from './layerView.js';
@@ -16,8 +16,10 @@ const DEG = Math.PI / 180;
 // ---------------------------------------------------------------- state
 const defaultSettings = () => ({
   sizeMode: 'scale', bpu: 2, keepProp: true, fitAxis: 1, fitDims: [32, 32, 32],
-  slabs: true, topSlabs: true, hollow: false, threshold: 0.5, quality: 'normal', auto: true,
+  slabs: true, topSlabs: true, stairs: true, stairCorners: true, hollow: false, threshold: 0.5, quality: 'normal', auto: true,
 });
+const defaultRepeat = () => ({ count: 1, axis: 'z', spacing: 6 });
+const AXES = { x: [1, 0, 0], y: [0, 1, 0], z: [0, 0, 1] };
 
 let shapes = [];
 let settings = defaultSettings();
@@ -29,11 +31,12 @@ let voxels = null, summary = null;
 let layer = 0;
 
 function makeShape(type, over = {}) {
-  const def = SHAPE_TYPES.find((t) => t.type === type) || SHAPE_TYPES[0];
+  const def = typeDef(type);
   const n = shapes.filter((s) => s.type === type).length + 1;
   return {
     id: nextId++, type, name: `${def.label} ${n}`, mode: 'add', material: 'stone', visible: true,
-    position: [0, def.scale[1] / 2, 0], rotation: [0, 0, 0], scale: [...def.scale], ...over,
+    position: [0, def.scale[1] / 2, 0], rotation: [0, 0, 0], scale: [...def.scale],
+    params: defaultParams(type), repeat: defaultRepeat(), ...over,
   };
 }
 
@@ -97,28 +100,50 @@ const blockView = new BlockView(canvas);
 const layerView = new LayerView($('layer-canvas'), $('tooltip'));
 
 const meshes = new Map();
-const edgeCache = new Map();
-const edgeGeo = (type) => {
-  if (!edgeCache.has(type)) edgeCache.set(type, new THREE.EdgesGeometry(getGeometry(type), 25));
-  return edgeCache.get(type);
-};
 
 function buildMesh(s) {
-  const mesh = new THREE.Mesh(getGeometry(s.type), new THREE.MeshStandardMaterial({ roughness: 0.85 }));
+  const mesh = new THREE.Mesh(new THREE.BufferGeometry(), new THREE.MeshStandardMaterial({ roughness: 0.85 }));
   mesh.userData.id = s.id;
-  const edges = new THREE.LineSegments(edgeGeo(s.type), new THREE.LineBasicMaterial({ transparent: true, opacity: 0.5 }));
+  const edges = new THREE.LineSegments(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ transparent: true, opacity: 0.5 }));
   edges.raycast = () => {};
   mesh.add(edges);
   mesh.userData.edges = edges;
+  mesh.userData.copies = [];
   shapeGroup.add(mesh);
   meshes.set(s.id, mesh);
   syncMesh(s);
   return mesh;
 }
 
+function disposeMesh(mesh) {
+  shapeGroup.remove(mesh);
+  for (const c of mesh.userData.copies) shapeGroup.remove(c);
+  if (!isSharedGeometry(mesh.geometry)) mesh.geometry.dispose();
+  mesh.userData.edges.geometry.dispose();
+  mesh.material.dispose();
+  mesh.userData.edges.material.dispose();
+}
+
+// Offsets (world space) of each repeated copy, including the original at index 0.
+function repeatOffsets(s) {
+  const r = s.repeat || defaultRepeat();
+  const n = Math.max(1, Math.min(200, Math.round(r.count || 1)));
+  const ax = AXES[r.axis] || AXES.z;
+  return Array.from({ length: n }, (_, i) => ax.map((v) => v * i * (r.spacing || 0)));
+}
+
 function syncMesh(s) {
   const mesh = meshes.get(s.id);
   if (!mesh) return;
+  const key = geometryKey(s);
+  if (mesh.userData.geoKey !== key) {
+    if (mesh.userData.geoKey && !isSharedGeometry(mesh.geometry)) mesh.geometry.dispose();
+    mesh.geometry = buildGeometry(s);
+    mesh.userData.edges.geometry.dispose();
+    mesh.userData.edges.geometry = new THREE.EdgesGeometry(mesh.geometry, 25);
+    mesh.userData.geoKey = key;
+    for (const c of mesh.userData.copies) c.geometry = mesh.geometry;
+  }
   mesh.position.fromArray(s.position);
   mesh.rotation.set(s.rotation[0] * DEG, s.rotation[1] * DEG, s.rotation[2] * DEG);
   mesh.scale.fromArray(s.scale);
@@ -136,6 +161,47 @@ function syncMesh(s) {
   }
   m.emissive.set(sel ? 0x2a2000 : 0x000000);
   m.needsUpdate = true;
+  syncCopies(s, mesh);
+}
+
+function syncCopies(s, mesh) {
+  const offs = repeatOffsets(s).slice(1);
+  const copies = mesh.userData.copies;
+  while (copies.length > offs.length) shapeGroup.remove(copies.pop());
+  while (copies.length < offs.length) {
+    const c = new THREE.Mesh(mesh.geometry, mesh.material);
+    c.userData.id = s.id;
+    c.renderOrder = mesh.renderOrder;
+    shapeGroup.add(c);
+    copies.push(c);
+  }
+  offs.forEach((o, i) => {
+    const c = copies[i];
+    c.position.set(s.position[0] + o[0], s.position[1] + o[1], s.position[2] + o[2]);
+    c.rotation.copy(mesh.rotation);
+    c.scale.copy(mesh.scale);
+    c.visible = s.visible;
+    c.renderOrder = mesh.renderOrder;
+  });
+}
+
+// World matrices for the shape and all its repeated copies.
+function shapeMatrices(s) {
+  const mesh = meshes.get(s.id);
+  mesh.updateMatrixWorld(true);
+  return repeatOffsets(s).map((o) => new THREE.Matrix4().makeTranslation(o[0], o[1], o[2]).multiply(mesh.matrixWorld));
+}
+
+function shapeBoxes(s) {
+  const mesh = meshes.get(s.id);
+  if (!mesh.geometry.boundingBox) mesh.geometry.computeBoundingBox();
+  return shapeMatrices(s).map((m) => {
+    // precise box: transform the vertices
+    const box = new THREE.Box3();
+    const pos = mesh.geometry.attributes.position, v = new THREE.Vector3();
+    for (let i = 0; i < pos.count; i++) box.expandByPoint(v.fromBufferAttribute(pos, i).applyMatrix4(m));
+    return box;
+  });
 }
 
 function readMesh(s) {
@@ -148,7 +214,7 @@ function readMesh(s) {
 
 function rebuildMeshes() {
   tc.detach();
-  for (const m of meshes.values()) { shapeGroup.remove(m); m.material.dispose(); m.userData.edges.material.dispose(); }
+  for (const m of meshes.values()) disposeMesh(m);
   meshes.clear();
   shapes.forEach(buildMesh);
   if (selected()) tc.attach(meshes.get(selectedId)); else selectedId = null;
@@ -161,9 +227,7 @@ function computeBounds() {
   const box = new THREE.Box3();
   for (const s of shapes) {
     if (!s.visible || s.mode !== 'add') continue;
-    const mesh = meshes.get(s.id);
-    mesh.updateMatrixWorld(true);
-    box.union(new THREE.Box3().setFromObject(mesh, true));
+    for (const b of shapeBoxes(s)) box.union(b);
   }
   return box;
 }
@@ -225,18 +289,21 @@ function convert() {
     dims,
     origin: box.min.toArray(),
     cell: size.map((v, i) => v / dims[i]),
-    shapes: shapes.filter((s) => s.visible).map((s) => {
-      const mesh = meshes.get(s.id);
-      mesh.updateMatrixWorld(true);
-      const bb = new THREE.Box3().setFromObject(mesh, true).expandByScalar(1e-4);
-      return {
-        type: s.type, add: s.mode === 'add', mat: blockIndex(s.material),
-        inv: Array.from(mesh.matrixWorld.clone().invert().elements),
-        aabb: [...bb.min.toArray(), ...bb.max.toArray()],
-      };
+    shapes: shapes.filter((s) => s.visible).flatMap((s) => {
+      const boxes = shapeBoxes(s);
+      const params = voxelParams(s);
+      return shapeMatrices(s).map((m, i) => {
+        const bb = boxes[i].expandByScalar(1e-4);
+        return {
+          type: s.type, add: s.mode === 'add', mat: blockIndex(s.material), params,
+          inv: Array.from(m.clone().invert().elements),
+          aabb: [...bb.min.toArray(), ...bb.max.toArray()],
+        };
+      });
     }),
     options: {
       slabs: settings.slabs, topSlabs: settings.topSlabs, hollow: settings.hollow,
+      stairs: settings.stairs, stairCorners: settings.stairCorners, stairMats: BLOCKS.map((b) => !!b.stairs),
       threshold: settings.threshold, quality: settings.quality, materialCount: BLOCKS.length,
     },
   };
@@ -342,19 +409,53 @@ function select(id) {
   const s = selected();
   if (s && view === 'design') tc.attach(meshes.get(s.id)); else tc.detach();
   renderShapeList();
+  renderParams();
   fillProps();
+}
+
+// Per-shape parameter controls (thickness, roundness, ...)
+function renderParams() {
+  const wrap = $('p-params');
+  const s = selected();
+  wrap.innerHTML = '';
+  wrap.dataset.for = s ? s.id + s.type : '';
+  if (!s) return;
+  for (const d of typeDef(s.type).params || []) {
+    const row = document.createElement('div');
+    row.className = 'param';
+    const isRange = d.max - d.min <= 10;
+    row.innerHTML = `<div class="top"><span>${d.label}</span><input type="number" min="${d.min}" max="${d.max}" step="${d.step}" data-param="${d.key}" /></div>` +
+      (isRange ? `<input type="range" min="${d.min}" max="${d.max}" step="${d.step}" data-param="${d.key}" />` : '') +
+      (d.hint ? `<small>${d.hint}</small>` : '');
+    row.querySelectorAll('[data-param]').forEach((el) => {
+      el.addEventListener('input', () => {
+        const v = parseFloat(el.value);
+        if (!Number.isFinite(v)) return;
+        s.params = { ...defaultParams(s.type), ...(s.params || {}), [d.key]: Math.min(d.max, Math.max(d.min, v)) };
+        row.querySelectorAll('[data-param]').forEach((o) => { if (o !== el) o.value = v; });
+        syncMesh(s); updateDims();
+      });
+      el.addEventListener('change', () => commit());
+    });
+    wrap.appendChild(row);
+  }
 }
 
 function fillProps() {
   const s = selected();
   $('props').hidden = !s;
   if (!s) return;
+  if ($('p-params').dataset.for !== s.id + s.type) renderParams();
   const set = (el, v) => { if (document.activeElement !== el) el.value = v; };
   set($('p-name'), s.name);
   $('p-mode').value = s.mode;
   $('p-mat').value = s.material;
   $('p-mat').disabled = s.mode === 'sub';
   document.querySelectorAll('[data-vec]').forEach((el) => set(el, s[el.dataset.vec][+el.dataset.i]));
+  const p = { ...defaultParams(s.type), ...(s.params || {}) };
+  document.querySelectorAll('#p-params [data-param]').forEach((el) => set(el, p[el.dataset.param]));
+  const r = s.repeat || defaultRepeat();
+  set($('r-count'), r.count); $('r-axis').value = r.axis; set($('r-spacing'), r.spacing);
 }
 
 function initProps() {
@@ -379,6 +480,17 @@ function initProps() {
     });
     el.addEventListener('change', () => commit());
   });
+  const repeatInput = () => {
+    const s = selected(); if (!s) return;
+    const count = Math.max(1, Math.min(200, Math.round(parseFloat($('r-count').value) || 1)));
+    const spacing = parseFloat($('r-spacing').value);
+    s.repeat = { count, axis: $('r-axis').value, spacing: Number.isFinite(spacing) ? spacing : 0 };
+    syncMesh(s); updateDims();
+  };
+  ['r-count', 'r-axis', 'r-spacing'].forEach((id) => {
+    $(id).addEventListener('input', repeatInput);
+    $(id).addEventListener('change', () => { repeatInput(); commit(); });
+  });
   $('p-dup').onclick = () => duplicate(false);
   $('p-mirror').onclick = () => duplicate(true);
   $('p-del').onclick = deleteSelected;
@@ -395,6 +507,7 @@ function duplicate(mirror) {
     c.scale[0] = -c.scale[0];
     c.rotation[1] = -c.rotation[1];
     c.rotation[2] = -c.rotation[2];
+    if (c.repeat && c.repeat.axis === 'x') c.repeat.spacing = -c.repeat.spacing;
   } else {
     c.name = s.name + ' copy';
     c.position[0] += 1; c.position[2] += 1;
@@ -408,8 +521,7 @@ function duplicate(mirror) {
 function deleteSelected() {
   const s = selected(); if (!s) return;
   tc.detach();
-  const m = meshes.get(s.id);
-  shapeGroup.remove(m); m.material.dispose();
+  disposeMesh(meshes.get(s.id));
   meshes.delete(s.id);
   shapes = shapes.filter((x) => x !== s);
   selectedId = null;
@@ -458,6 +570,8 @@ function initSettings() {
   const bind = (id, key, conv = (el) => el.checked) => $(id).addEventListener('change', (e) => { settings[key] = conv(e.target); applySettingsUI(); commit(); });
   bind('opt-slabs', 'slabs');
   bind('opt-topslabs', 'topSlabs');
+  bind('opt-stairs', 'stairs');
+  bind('opt-corners', 'stairCorners');
   bind('opt-hollow', 'hollow');
   bind('opt-quality', 'quality', (el) => el.value);
   bind('opt-auto', 'auto');
@@ -471,7 +585,10 @@ function applySettingsUI() {
   $('keep-prop').checked = settings.keepProp;
   $('opt-slabs').checked = settings.slabs;
   $('opt-topslabs').checked = settings.topSlabs;
-  $('opt-topslabs').disabled = !settings.slabs;
+  $('opt-topslabs').disabled = !settings.slabs && !settings.stairs;
+  $('opt-stairs').checked = settings.stairs;
+  $('opt-corners').checked = settings.stairCorners;
+  $('opt-corners').disabled = !settings.stairs;
   $('opt-hollow').checked = settings.hollow;
   $('opt-quality').value = settings.quality;
   $('opt-auto').checked = settings.auto;
@@ -497,7 +614,7 @@ function updateLayerUI() {
   const pl = summary.perLayer[layer];
   $('layer-y').textContent = `${layer + 1} / ${v.H}`;
   const doneCount = [...built].filter((y) => y < v.H).length;
-  $('layer-info').innerHTML = `Layer <b>${layer + 1}</b> (y +${layer}) · <b>${pl.full}</b> blocks · <b>${pl.slab}</b> slabs` +
+  $('layer-info').innerHTML = `Layer <b>${layer + 1}</b> (y +${layer}) · <b>${pl.full}</b> blocks · <b>${pl.slab}</b> slabs · <b>${pl.stair}</b> stairs` +
     (built.has(layer) ? ' · ✅ built' : '') + `<br><small>${doneCount} of ${v.H} layers marked built</small>`;
   $('layer-built').checked = built.has(layer);
 }
@@ -506,16 +623,18 @@ function renderMaterials() {
   const ul = $('materials');
   ul.innerHTML = '';
   if (!summary) { $('stats').textContent = ''; return; }
-  const { full, slab, perMat } = summary;
-  $('stats').innerHTML = `<b>${(full + slab).toLocaleString()}</b> pieces · ${full.toLocaleString()} blocks + ${slab.toLocaleString()} slabs<br>` +
-    `≈ ${((full + Math.ceil(slab / 2)) / 1728).toFixed(2)} shulker boxes of raw blocks`;
+  const { full, slab, stair, perMat } = summary;
+  const raw = full + Math.ceil(slab / 2) + Math.ceil(stair / 4) * 6;
+  $('stats').innerHTML = `<b>${(full + slab + stair).toLocaleString()}</b> pieces · ${full.toLocaleString()} blocks + ${slab.toLocaleString()} slabs + ${stair.toLocaleString()} stairs<br>` +
+    `≈ ${(raw / 1728).toFixed(2)} shulker boxes of raw blocks`;
   perMat.forEach((m, i) => {
-    if (!m.full && !m.slab) return;
+    if (!m.full && !m.slab && !m.stair) return;
     const b = BLOCKS[i];
     const li = document.createElement('li');
     const parts = [];
     if (m.full) parts.push(`${m.full} blocks <small>${stacks(m.full)}</small>`);
     if (m.slab) parts.push(`${m.slab} slabs <small>${stacks(m.slab)} · craft from ${Math.ceil(m.slab / 2)} blocks</small>`);
+    if (m.stair) parts.push(`${m.stair} stairs <small>${stacks(m.stair)} · craft from ${Math.ceil(m.stair / 4) * 6} blocks</small>`);
     li.innerHTML = `<span class="sw" style="background:${b.color}"></span><div><b>${b.name}</b><br>${parts.join('<br>')}</div>`;
     ul.appendChild(li);
   });
@@ -637,7 +756,7 @@ function save() {
 
 function loadProject(d) {
   if (!d || !Array.isArray(d.shapes)) throw new Error('Not a Shape Layers project');
-  shapes = d.shapes.map((s) => ({ visible: true, mode: 'add', material: 'stone', rotation: [0, 0, 0], ...s }));
+  shapes = d.shapes.map((s) => ({ visible: true, mode: 'add', material: 'stone', rotation: [0, 0, 0], repeat: defaultRepeat(), ...s, params: { ...defaultParams(s.type), ...(s.params || {}) } }));
   settings = { ...defaultSettings(), ...(d.settings || {}) };
   built = new Set(d.built || []);
   nextId = shapes.reduce((m, s) => Math.max(m, s.id || 0), 0) + 1;
@@ -720,6 +839,63 @@ function openLayerSheet() {
   w.document.close();
 }
 
+// ---------------------------------------------------------------- hall builder
+// Pillars across the hall (repeated along its length) + a vault resting on the outer pillars.
+function initHall() {
+  const dlg = $('hall-dialog'), form = $('hall-form');
+  for (const name of ['pillarMat', 'roofMat']) {
+    const sel = form.elements[name];
+    for (const b of BLOCKS) { const o = document.createElement('option'); o.value = b.id; o.textContent = b.name; sel.appendChild(o); }
+  }
+  form.elements.pillarMat.value = 'spruce';
+  form.elements.roofMat.value = 'stone_bricks';
+  const num = (n) => parseFloat(form.elements[n].value) || 0;
+  const summary = () => {
+    form.elements.roundOut.value = form.elements.roundness.value;
+    form.elements.flatOut.value = form.elements.flatten.value;
+    const across = Math.max(2, Math.round(num('across'))), w = Math.max(1, num('width')), gap = num('gap');
+    const span = (across - 1) * (w + gap) + w;
+    const along = Math.max(1, Math.floor((num('hallLength') - w) / Math.max(1, num('every'))) + 1);
+    $('hall-summary').textContent = `Outer face to outer face: ${span} blocks · pillar centers ${(across - 1) * (w + gap)} apart · ` +
+      `${across} × ${along} pillars · roof ${span + 2 * num('overhang')} wide, peak at y ${num('height') + num('rise')}`;
+  };
+  form.addEventListener('input', summary);
+  $('btn-hall').onclick = () => { summary(); dlg.showModal(); };
+  dlg.addEventListener('close', () => {
+    if (dlg.returnValue !== 'ok') return;
+    const across = Math.max(2, Math.round(num('across'))), w = Math.max(1, num('width')), gap = Math.max(0, num('gap'));
+    const height = Math.max(1, num('height')), length = Math.max(1, num('hallLength')), every = Math.max(1, num('every'));
+    const span = (across - 1) * (w + gap) + w;
+    const along = Math.max(1, Math.floor((length - w) / every) + 1);
+    const roofW = Math.max(1, span + 2 * num('overhang'));
+    const rise = Math.max(0.5, num('rise'));
+    if (form.elements.replace.checked) { shapes = []; nextId = 1; }
+    const pillarIds = [];
+    for (let i = 0; i < across; i++) {
+      const x = -span / 2 + i * (w + gap) + w / 2;
+      const p = makeShape('box', {
+        name: `Pillar row ${i + 1}`, material: form.elements.pillarMat.value,
+        position: [x, height / 2, w / 2], scale: [w, height, w],
+        repeat: { count: along, axis: 'z', spacing: every },
+      });
+      shapes.push(p); pillarIds.push(p.id);
+    }
+    const roof = makeShape('vault', {
+      name: 'Vault roof', material: form.elements.roofMat.value,
+      position: [0, height + rise / 2, length / 2], scale: [roofW, rise, length],
+      params: { thickness: num('thickness'), roundness: num('roundness'), flatten: num('flatten') },
+    });
+    shapes.push(roof);
+    // 1 unit = 1 block so the pillar spacing is exact
+    settings.sizeMode = 'scale'; settings.bpu = 1; settings.stairs = true;
+    lastDims = null;
+    rebuildMeshes(); applySettingsUI();
+    select(roof.id);
+    commit();
+    frameDesign();
+  });
+}
+
 // ---------------------------------------------------------------- theme & keys
 function applyTheme(t) {
   document.documentElement.dataset.resolvedTheme = t;
@@ -767,7 +943,7 @@ function initKeys() {
   if (!loaded) defaultProject();
 
   renderShapeButtons();
-  initProps(); initSettings(); initLayers(); initViews(); initFile(); initKeys();
+  initProps(); initSettings(); initLayers(); initViews(); initFile(); initKeys(); initHall();
   rebuildMeshes(); applySettingsUI(); renderShapeList(); fillProps();
   resize();
   commit();
