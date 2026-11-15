@@ -43,7 +43,7 @@ Run the tests with `npm test` (needs Node 18 or newer).
 | **Show blocks** | Toolbar toggle in Design view: draws the converted blocks over the (faded) shapes while you edit. |
 | **Sections** | In **3 · Layers**, switch between **Top** (the layer plan), **Front section** (a vertical cut across the hall: x · y) and **Side section** (along the hall: z · y). Use the slice slider or ←/→ to move the cut. Slabs and stairs are drawn with their real profile, everything behind the cut is shown faded, and the header shows the width and the clear height at the center. |
 | **Repeat** | Any shape can be copied N times along x, y or z at a fixed spacing, which is handy for rows of pillars, ribs or windows. |
-| **Size** | **Scale** means *N blocks per design unit*. **Fit size** means you type the width, height or depth you want in blocks. With *Keep proportions* on, the other two follow. The ½× / 2× / 3× buttons scale the whole build up or down. |
+| **Size** | **Blocks / unit** sets the scale (use whole numbers like 1, 2 or 3 so 1-wide pillars stay exact). Typing a width, height or depth rescales everything **once**; after that, editing a shape only changes that shape. *Keep proportions* rescales all axes together. The ½× / 2× / 3× buttons scale the whole build. Stretching a shape's height with the gizmo keeps its bottom in place, so roofs stay on their pillars. |
 | **2 · Blocks** | A 3D preview made of real blocks and slabs. Move the layer slider to cut the model at a layer. Layers below it are dimmed. |
 | **3 · Layers** | The plan to build from. Use ↑/↓ or PageUp/PageDown to change layers. Tick **Mark this layer as built** to track your progress. |
 

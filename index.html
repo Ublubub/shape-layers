@@ -137,16 +137,15 @@
     <aside class="panel right">
       <section>
         <h2>Size in blocks</h2>
-        <div class="seg" id="size-mode">
-          <button data-mode="scale" class="active">Scale</button>
-          <button data-mode="fit">Fit size</button>
-        </div>
         <label class="row" id="row-bpu"><span>Blocks / unit</span><input id="bpu" type="number" step="0.25" min="0.05" value="2" /></label>
         <div class="dims">
           <label><span>W (x)</span><input id="dim-w" type="number" min="1" step="1" /></label>
           <label><span>H (y)</span><input id="dim-h" type="number" min="1" step="1" /></label>
           <label><span>D (z)</span><input id="dim-d" type="number" min="1" step="1" /></label>
         </div>
+        <p class="hint-line">Typing a size rescales everything once. After that, editing a shape only changes that shape.</p>
+        <div class="warn" id="scale-warn" hidden>Blocks / unit isn't a whole number, so 1-wide pillars come out uneven (some 1, some 2 blocks).
+          <button id="scale-fix" type="button">Use whole blocks</button></div>
         <label class="chk"><input type="checkbox" id="keep-prop" checked /> Keep proportions</label>
         <div class="presets">Quick scale:
           <button data-mult="0.5">½×</button><button data-mult="2">2×</button><button data-mult="3">3×</button>

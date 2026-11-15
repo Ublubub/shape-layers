@@ -18,7 +18,7 @@ const DEG = Math.PI / 180;
 
 // ---------------------------------------------------------------- state
 const defaultSettings = () => ({
-  sizeMode: 'scale', bpu: 2, keepProp: true, fitAxis: 1, fitDims: [32, 32, 32],
+  bpu: 2, stretch: [1, 1, 1], keepProp: true,
   slabs: true, topSlabs: true, stairs: true, stairCorners: true, hollow: false, threshold: 0.5, quality: 'normal', auto: true,
 });
 const defaultRepeat = () => ({ count: 1, axis: 'z', spacing: 6 });
@@ -38,7 +38,7 @@ let overlayGroup = null;
 
 const stampById = (id) => stamps.find((t) => t.id === id) || null;
 // design units per block (stamps are block-exact, so they need this to size their mesh)
-const stampUnit = () => (settings.sizeMode === 'scale' ? 1 / settings.bpu : 1);
+const stampUnit = () => 1 / settings.bpu;
 
 function makeShape(type, over = {}) {
   const def = typeDef(type);
@@ -101,10 +101,21 @@ tc.addEventListener('objectChange', () => {
   const s = selected();
   if (!s) return;
   readMesh(s);
+  if (tc.mode === 'scale' && dragStart && s.rotation[0] === 0 && s.rotation[2] === 0 && s.type !== 'stamp') {
+    s.position[1] = Math.round((dragStart.base + Math.abs(s.scale[1]) / 2) * 1000) / 1000;
+    meshes.get(s.id).position.y = s.position[1];
+    syncMesh(s);
+  }
   fillProps();
   updateDims();
 });
 tc.addEventListener('mouseUp', () => commit());
+// Stretching keeps the bottom of an upright shape where it is, so a roof stays on its pillars.
+let dragStart = null;
+tc.addEventListener('mouseDown', () => {
+  const s = selected();
+  dragStart = s ? { base: s.position[1] - Math.abs(s.scale[1]) / 2 } : null;
+});
 
 const blockView = new BlockView(canvas);
 const layerView = new LayerView($('layer-canvas'), $('tooltip'));
@@ -263,14 +274,35 @@ function computeBounds() {
   return box;
 }
 
+// Convert the legacy continuous "fit" setting into the equivalent fixed scale.
+function migrateFit() {
+  if (!settings.sizeMode && settings.stretch) return;
+  if (settings.sizeMode === 'fit' && settings.fitDims) {
+    const box = computeBounds();
+    if (!box.isEmpty()) {
+      const sz = box.getSize(new THREE.Vector3()).toArray().map((v) => Math.max(v, 1e-6));
+      if (settings.keepProp !== false) {
+        const ax = settings.fitAxis ?? 1;
+        settings.bpu = Math.round((settings.fitDims[ax] / sz[ax]) * 1000) / 1000;
+        settings.stretch = [1, 1, 1];
+      } else {
+        const sc = settings.fitDims.map((d, i) => d / sz[i]);
+        settings.bpu = Math.round(sc[1] * 1000) / 1000;
+        settings.stretch = sc.map((v) => Math.round((v / settings.bpu) * 1000) / 1000);
+      }
+    }
+  }
+  settings.stretch = settings.stretch || [1, 1, 1];
+  delete settings.sizeMode; delete settings.fitDims; delete settings.fitAxis;
+}
+
 function scaleFor(size) {
   const sz = size.toArray().map((v) => Math.max(v, 1e-6));
-  if (settings.sizeMode === 'scale') return [settings.bpu, settings.bpu, settings.bpu];
-  if (settings.keepProp) {
-    const s = settings.fitDims[settings.fitAxis] / sz[settings.fitAxis];
-    return [s, s, s];
-  }
-  return settings.fitDims.map((d, i) => d / sz[i]);
+  // Old projects used a "fit" mode that re-fitted the whole build on every edit
+  // (so a taller roof made the pillars thinner). The scale is now fixed: typing a
+  // size rescales once, then edits only change the shapes you touch.
+  const st = settings.stretch || [1, 1, 1];
+  return st.map((k) => settings.bpu * k);
 }
 
 function dimsFor(box) {
@@ -288,8 +320,9 @@ function updateDims() {
   ['dim-w', 'dim-h', 'dim-d'].forEach((id, i) => {
     if (document.activeElement !== $(id)) $(id).value = dims ? dims[i] : '';
   });
-  $('row-bpu').hidden = settings.sizeMode !== 'scale';
-  document.querySelectorAll('#size-mode button').forEach((b) => b.classList.toggle('active', b.dataset.mode === settings.sizeMode));
+  // fractional scales turn 1-unit pillars into a mix of 1- and 2-block columns
+  const uneven = scaleFor(new THREE.Vector3(1, 1, 1)).some((v) => Math.abs(v * 2 - Math.round(v * 2)) > 1e-6);
+  $('scale-warn').hidden = !uneven;
   const help = $('help');
   if (!dims) help.textContent = 'Add a solid shape to get started';
   else {
@@ -719,40 +752,38 @@ function deleteSelected() {
 
 // ---------------------------------------------------------------- UI: settings
 function initSettings() {
-  document.querySelectorAll('#size-mode button').forEach((b) => b.onclick = () => {
-    if (settings.sizeMode === b.dataset.mode) return;
-    const dims = updateDims();
-    settings.sizeMode = b.dataset.mode;
-    if (dims && b.dataset.mode === 'fit') settings.fitDims = dims;
-    if (dims && b.dataset.mode === 'scale') {
-      const size = computeBounds().getSize(new THREE.Vector3()).toArray();
-      settings.bpu = Math.round((dims[settings.fitAxis] / size[settings.fitAxis]) * 100) / 100;
-    }
-    applySettingsUI(); updateDims(); commit();
-  });
   $('bpu').addEventListener('change', (e) => {
     const v = parseFloat(e.target.value);
     if (v > 0) { settings.bpu = v; updateDims(); commit(); }
   });
+  $('scale-fix').onclick = () => {
+    settings.bpu = Math.max(1, Math.round(settings.bpu));
+    settings.stretch = [1, 1, 1];
+    applySettingsUI(); updateDims(); commit();
+  };
+  // typing a size rescales ONCE (sets blocks-per-unit); later edits don't re-fit
   ['dim-w', 'dim-h', 'dim-d'].forEach((id, axis) => $(id).addEventListener('change', (e) => {
     const v = Math.max(1, Math.round(parseFloat(e.target.value) || 1));
-    const cur = updateDims() || settings.fitDims;
-    settings.sizeMode = 'fit';
-    settings.fitAxis = axis;
-    settings.fitDims = [...cur];
-    settings.fitDims[axis] = v;
+    const box = computeBounds();
+    if (box.isEmpty()) return;
+    const size = Math.max(1e-6, box.getSize(new THREE.Vector3()).getComponent(axis));
+    if (settings.keepProp) {
+      settings.bpu = Math.round((v / size) * 1000) / 1000;
+      settings.stretch = [1, 1, 1];
+    } else {
+      settings.stretch = [...(settings.stretch || [1, 1, 1])];
+      settings.stretch[axis] = Math.round((v / size / settings.bpu) * 1000) / 1000;
+    }
     applySettingsUI(); updateDims(); commit();
   }));
   $('keep-prop').onchange = (e) => {
     settings.keepProp = e.target.checked;
-    const dims = updateDims();
-    if (dims) settings.fitDims = dims;
+    if (settings.keepProp) settings.stretch = [1, 1, 1];
     updateDims(); commit();
   };
   document.querySelectorAll('.presets [data-mult]').forEach((b) => b.onclick = () => {
     const k = parseFloat(b.dataset.mult);
-    if (settings.sizeMode === 'scale') settings.bpu = Math.round(settings.bpu * k * 100) / 100;
-    else settings.fitDims = settings.fitDims.map((d) => Math.max(1, Math.round(d * k)));
+    settings.bpu = Math.round(settings.bpu * k * 1000) / 1000;
     applySettingsUI(); updateDims(); commit();
   });
   const bind = (id, key, conv = (el) => el.checked) => $(id).addEventListener('change', (e) => { settings[key] = conv(e.target); applySettingsUI(); commit(); });
@@ -972,7 +1003,7 @@ function restore(json) {
   stamps = d.stamps || [];
   renderStampList();
   nextId = shapes.reduce((m, s) => Math.max(m, s.id), 0) + 1;
-  rebuildMeshes(); applySettingsUI(); renderShapeList(); fillProps(); updateDims();
+  rebuildMeshes(); migrateFit(); applySettingsUI(); renderShapeList(); fillProps(); updateDims();
   save(); scheduleConvert();
 }
 function undo() { if (hIndex > 0) { hIndex--; restore(history[hIndex]); } }
@@ -1006,7 +1037,7 @@ function initFile() {
     const f = e.target.files[0]; if (!f) return;
     try {
       loadProject(JSON.parse(await f.text()));
-      rebuildMeshes(); applySettingsUI(); renderShapeList(); renderStampList(); fillProps(); commit(); frameDesign();
+      rebuildMeshes(); migrateFit(); applySettingsUI(); renderShapeList(); renderStampList(); fillProps(); commit(); frameDesign();
     } catch (err) { alert('Could not open file: ' + err.message); }
     e.target.value = '';
   };
@@ -1225,7 +1256,7 @@ function initHall() {
     });
     shapes.push(roof);
     // 1 unit = 1 block so the pillar spacing is exact
-    settings.sizeMode = 'scale'; settings.bpu = 1; settings.stairs = true;
+    settings.bpu = 1; settings.stretch = [1, 1, 1]; settings.stairs = true;
     lastDims = null;
     rebuildMeshes(); applySettingsUI();
     select(roof.id);
@@ -1283,7 +1314,7 @@ function initKeys() {
 
   renderShapeButtons();
   initProps(); initSettings(); initLayers(); initViews(); initFile(); initKeys(); initHall(); initStamps();
-  rebuildMeshes(); applySettingsUI(); renderShapeList(); fillProps();
+  rebuildMeshes(); migrateFit(); applySettingsUI(); renderShapeList(); fillProps();
   resize();
   commit();
   convert();

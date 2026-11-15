@@ -275,3 +275,9 @@ fieldset input[type="number"], fieldset select { width: 100%; }
 .se-foot { justify-content: flex-end; margin-top: 10px; }
 .se-foot button { flex: 0 0 auto; padding: 6px 16px; }
 @media (max-width: 900px) { .se-body { grid-template-columns: 1fr; } }
+
+/* --- size panel --- */
+.hint-line { color: var(--muted); font-size: 11px; margin: 4px 0; }
+.warn { border: 1px solid #e8590c; background: rgba(232, 89, 12, .12); border-radius: 6px; padding: 6px 8px; font-size: 12px; margin: 6px 0; }
+.warn[hidden] { display: none; }
+.warn button { display: block; margin-top: 6px; }
