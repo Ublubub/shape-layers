@@ -549,6 +549,7 @@ function shapeRow(s, idx) {
 // The list is grouped into parts (Pillars, Walls, Roof...). Each part can be moved,
 // turned, hidden, duplicated or soloed as a whole — build pieces separately, then combine.
 function renderShapeList() {
+  updateGuidance();
   const ul = $('shape-list');
   ul.innerHTML = '';
   if (soloGroup) {
@@ -683,6 +684,8 @@ function select(id) {
   renderShapeList();
   renderParams();
   fillProps();
+  // bring the settings of what was just selected into view
+  if (s) requestAnimationFrame(() => $('props').scrollIntoView({ block: 'nearest', behavior: 'smooth' }));
 }
 
 // Per-shape parameter controls (thickness, roundness, ...)
@@ -1114,6 +1117,7 @@ function setView(v) {
   if (v === 'design' && selected()) tc.attach(meshes.get(selectedId)); else tc.detach();
   if (v !== 'design' && (!voxels || !settings.auto)) convert();
   if (v === 'layers') { layerView.resize(); }
+  updateGuidance();
   updateDims();
 }
 
@@ -1270,7 +1274,7 @@ function initFile() {
   };
 
   const menu = $('export-menu');
-  $('btn-export').onclick = (e) => { e.stopPropagation(); menu.hidden = !menu.hidden; };
+  $('btn-export').onclick = (e) => { e.stopPropagation(); menu.hidden = !menu.hidden; $('file-menu').hidden = true; };
   document.addEventListener('click', () => { menu.hidden = true; });
   menu.querySelectorAll('[data-export]').forEach((b) => b.onclick = () => doExport(b.dataset.export));
 
@@ -1552,6 +1556,91 @@ function initHall() {
   });
 }
 
+// ---------------------------------------------------------------- newcomer guidance
+// The right panel's "next step" card, the empty-build hint and which panels show per step.
+function updateGuidance() {
+  if (!$('next-step')) return;
+  const empty = !shapes.length;
+  $('empty-hint').hidden = !empty || view !== 'design';
+  $('layer-section').hidden = view === 'design';
+  const card = $('next-step'), btn = $('go-blocks'), p = card.querySelector('p');
+  card.hidden = empty || view === 'layers';
+  if (view === 'design') { p.textContent = 'When the shape looks right, check it as real Minecraft blocks.'; btn.textContent = 'See it as blocks ›'; btn.dataset.go = 'blocks'; }
+  else if (view === 'blocks') { p.textContent = 'Happy with the blocks? Follow the plan one layer at a time.'; btn.textContent = 'Build it layer by layer ›'; btn.dataset.go = 'layers'; }
+}
+
+function loadFresh(withExample) {
+  shapes = []; settings = defaultSettings(); built = new Set(); selectedId = null; selectedGroup = null; soloGroup = null; nextId = 1; lastDims = null;
+  if (withExample) defaultProject();
+  rebuildMeshes(); applySettingsUI(); renderShapeList(); fillProps();
+  if (!withExample) setVoxels(null);
+  setView('design');
+  commit();
+  if (withExample) frameDesign();
+}
+
+function openWelcome() {
+  $('w-close').textContent = shapes.length ? 'Continue my build' : 'Close';
+  $('welcome').showModal();
+}
+
+function initUX() {
+  // File menu
+  const fm = $('file-menu');
+  $('btn-file').onclick = (e) => { e.stopPropagation(); fm.hidden = !fm.hidden; $('export-menu').hidden = true; };
+  document.addEventListener('click', () => { fm.hidden = true; });
+  fm.querySelectorAll('button').forEach((b) => b.addEventListener('click', () => { fm.hidden = true; }));
+
+  // Advanced switch: fine-tuning settings stay out of the way until asked for
+  const setAdv = (on) => {
+    document.body.classList.toggle('show-adv', on);
+    $('adv-toggle').checked = on;
+    try { localStorage.setItem('shape-layers:advanced', on ? '1' : '0'); } catch { /* ignore */ }
+  };
+  let adv = false;
+  try { adv = localStorage.getItem('shape-layers:advanced') === '1'; } catch { /* ignore */ }
+  setAdv(adv);
+  $('adv-toggle').onchange = (e) => setAdv(e.target.checked);
+
+  // Add tabs (Builders / Shapes / Stamps)
+  const setAdd = (k) => {
+    document.querySelectorAll('#add-tabs button').forEach((b) => b.classList.toggle('active', b.dataset.add === k));
+    document.querySelectorAll('[data-addpane]').forEach((p) => { p.hidden = p.dataset.addpane !== k; });
+    try { localStorage.setItem('shape-layers:addTab', k); } catch { /* ignore */ }
+  };
+  document.querySelectorAll('#add-tabs button').forEach((b) => b.onclick = () => setAdd(b.dataset.add));
+  let tab = 'builders';
+  try { tab = localStorage.getItem('shape-layers:addTab') || 'builders'; } catch { /* ignore */ }
+  setAdd(tab);
+
+  $('p-close').onclick = () => select(null);
+  $('go-blocks').onclick = () => setView($('go-blocks').dataset.go || 'blocks');
+  $('empty-hall').onclick = () => $('btn-hall').click();
+
+  // Welcome / help
+  const w = $('welcome');
+  const done = () => { try { localStorage.setItem('shape-layers:welcomed', '1'); } catch { /* ignore */ } w.close(); };
+  $('btn-help').onclick = openWelcome;
+  $('w-close').onclick = done;
+  $('w-hall').onclick = () => { done(); $('btn-hall').click(); };
+  $('w-example').onclick = () => {
+    if (shapes.length && !confirm('Replace your current build with the example tower?')) return;
+    done(); loadFresh(true);
+  };
+  $('w-empty').onclick = () => {
+    if (shapes.length && !confirm('Start empty? Your current build will be replaced (save it first from File if you want to keep it).')) return;
+    done(); loadFresh(false);
+  };
+  window.addEventListener('keydown', (e) => {
+    const typing = /INPUT|SELECT|TEXTAREA/.test(document.activeElement.tagName);
+    if (e.key === '?' && !typing && !document.querySelector('dialog[open]')) openWelcome();
+  });
+  let seen = false;
+  try { seen = localStorage.getItem('shape-layers:welcomed') === '1'; } catch { /* ignore */ }
+  if (!seen) openWelcome();
+  updateGuidance();
+}
+
 // ---------------------------------------------------------------- theme & keys
 function applyTheme(t) {
   document.documentElement.dataset.resolvedTheme = t;
@@ -1600,7 +1689,7 @@ function initKeys() {
   if (!loaded) defaultProject();
 
   renderShapeButtons();
-  initProps(); initSettings(); initLayers(); initViews(); initFile(); initKeys(); initHall(); initStamps();
+  initProps(); initSettings(); initLayers(); initViews(); initFile(); initKeys(); initHall(); initStamps(); initUX();
   rebuildMeshes(); migrateFit(); applySettingsUI(); renderShapeList(); fillProps();
   resize();
   commit();

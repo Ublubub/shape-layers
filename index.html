@@ -18,23 +18,32 @@
 <body>
   <header class="topbar">
     <div class="brand"><span class="logo">▦</span> Shape Layers</div>
-    <nav class="tabs" role="tablist">
-      <button class="tab active" data-view="design" title="Model with shapes (1)">1 · Design</button>
-      <button class="tab" data-view="blocks" title="3D block preview (2)">2 · Blocks</button>
-      <button class="tab" data-view="layers" title="Layer-by-layer plan (3)">3 · Layers</button>
+    <nav class="tabs steps" role="tablist" aria-label="Steps">
+      <button class="tab active" data-view="design" title="Shape your build (1)"><b>1</b><span>Design<small>shape it</small></span></button>
+      <span class="step-arrow">›</span>
+      <button class="tab" data-view="blocks" title="See it as real blocks (2)"><b>2</b><span>Blocks<small>check it</small></span></button>
+      <span class="step-arrow">›</span>
+      <button class="tab" data-view="layers" title="Follow it layer by layer (3)"><b>3</b><span>Layers<small>build it</small></span></button>
     </nav>
     <div class="file">
-      <button id="btn-new" title="New project">New</button>
-      <button id="btn-open" title="Open a .json project">Open</button>
-      <button id="btn-save" title="Save project as .json">Save</button>
+      <button id="btn-help" title="Getting started (?)">? Help</button>
+      <label class="switch" title="Show every setting, including fine-tuning options"><input type="checkbox" id="adv-toggle" /><span class="track"></span> Advanced</label>
       <div class="menu">
-        <button id="btn-export" class="primary">Export ▾</button>
+        <button id="btn-file">File ▾</button>
+        <div class="menu-list" id="file-menu" hidden>
+          <button id="btn-new">New project</button>
+          <button id="btn-open">Open project (.json)…</button>
+          <button id="btn-save">Save project (.json)</button>
+        </div>
+      </div>
+      <div class="menu">
+        <button id="btn-export" class="primary" title="Download your build for Minecraft">Export ▾</button>
         <div class="menu-list" id="export-menu" hidden>
-          <button data-export="schem">Schematic (.schem) — WorldEdit / Litematica</button>
-          <button data-export="mcfunction">Commands (.mcfunction)</button>
-          <button data-export="materials">Material list (.csv)</button>
-          <button data-export="layer-png">Current 2D view — layer or section (.png)</button>
-          <button data-export="sheet">Printable layer sheet</button>
+          <button data-export="schem"><b>Schematic (.schem)</b><small>Paste with WorldEdit or Litematica</small></button>
+          <button data-export="sheet"><b>Printable layer sheet</b><small>Every layer as a picture, to build by hand</small></button>
+          <button data-export="materials"><b>Material list (.csv)</b><small>What to gather, in stacks</small></button>
+          <button data-export="mcfunction"><b>Commands (.mcfunction)</b><small>Build it with a datapack or command blocks</small></button>
+          <button data-export="layer-png"><b>Current 2D view (.png)</b><small>The layer or section on screen</small></button>
         </div>
       </div>
       <button id="btn-theme" title="Toggle light/dark">◐</button>
@@ -44,53 +53,67 @@
 
   <div class="app">
     <aside class="panel left">
-      <section>
-        <h2>Add shape</h2>
-        <div class="shape-grid" id="shape-buttons"></div>
-        <div class="btn-row builders">
-          <button id="btn-hall" title="Generate pillars, walls and a vaulted roof">🏛 Hall…</button>
-          <button id="btn-wall" title="Design a wall: layered depth, palettes and gradients">🧱 Wall…</button>
-          <button id="btn-pillar" title="Design a pillar: base, trapdoor wraps, bands, capital">🗿 Pillar…</button>
+      <section class="add-section">
+        <h2>Add to your build</h2>
+        <div class="seg add-tabs" id="add-tabs">
+          <button data-add="builders" class="active" title="Generators for whole pieces">Builders</button>
+          <button data-add="shapes" title="Basic shapes to move, stretch and combine">Shapes</button>
+          <button data-add="stamps" title="Small block-by-block details">Stamps</button>
         </div>
-      </section>
-      <section>
-        <h2>Stamps <span class="hint">exact block details</span></h2>
-        <div class="btn-row stamp-btns">
-          <button id="btn-stamp-pillar" title="Start from a pillar with a stair base, trapdoors and a capital">🏛 Pillar template</button>
-          <button id="btn-stamp-new" title="Blank stamp">＋ New</button>
-          <button id="btn-stamp-import" title="Import a .schem (WorldEdit) or .nbt (structure block) file">⇪ Import</button>
+        <div class="add-pane" data-addpane="builders">
+          <button class="card" id="btn-hall"><b>🏛 Hall</b><small>Pillars, walls and an arched roof in one go. A great place to start.</small></button>
+          <button class="card" id="btn-wall"><b>🧱 Wall</b><small>Walls with depth (plinth, panels, beams) and mixed, worn blocks.</small></button>
+          <button class="card" id="btn-pillar"><b>🗿 Pillar</b><small>Detailed pillars: stair bases, trapdoor wraps, bands, capitals.</small></button>
         </div>
-        <ul class="shape-list stamp-list" id="stamp-list"></ul>
-        <input type="file" id="stamp-file" accept=".schem,.schematic,.nbt" hidden />
+        <div class="add-pane" data-addpane="shapes" hidden>
+          <p class="pane-hint">Basic shapes you can move, stretch and combine. Set one to <b>Carve</b> to cut a hole (doors, hollow towers).</p>
+          <div class="shape-grid" id="shape-buttons"></div>
+        </div>
+        <div class="add-pane" data-addpane="stamps" hidden>
+          <p class="pane-hint">Stamps are small pieces placed <b>block by block</b>, for details like trapdoors, logs and lanterns.</p>
+          <div class="btn-row stamp-btns">
+            <button id="btn-stamp-pillar" title="Start from a pillar with a stair base, trapdoors and a capital">🏛 Pillar template</button>
+            <button id="btn-stamp-new" title="Blank stamp">＋ New</button>
+            <button id="btn-stamp-import" title="Import a .schem (WorldEdit) or .nbt (structure block) file">⇪ Import</button>
+          </div>
+          <ul class="shape-list stamp-list" id="stamp-list"></ul>
+          <input type="file" id="stamp-file" accept=".schem,.schematic,.nbt" hidden />
+        </div>
       </section>
       <section class="grow">
-        <h2>Parts &amp; shapes <span class="hint">top → bottom = order applied</span></h2>
+        <h2>Your build <span class="hint">click to select</span></h2>
         <ul class="shape-list" id="shape-list"></ul>
       </section>
       <section id="props" hidden>
-        <h2>Selected</h2>
+        <h2><span>Selected</span><button class="icon-btn" id="p-close" type="button" title="Deselect (Esc)">✕</button></h2>
         <label class="row"><span>Name</span><input id="p-name" type="text" /></label>
         <div class="row stamp-only"><span id="p-stamp-label">Stamp</span><span id="p-stamp-name" class="ellipsis"></span><button id="p-edit-stamp" type="button">Edit</button></div>
-        <label class="row"><span>Part</span><input id="p-group" type="text" list="group-list" placeholder="none (e.g. Walls)" /></label>
-        <datalist id="group-list"></datalist>
-        <label class="row no-stamp"><span>Mode</span>
-          <select id="p-mode"><option value="add">Add (solid)</option><option value="sub">Carve (subtract)</option></select>
-        </label>
         <label class="row no-stamp"><span>Block</span><select id="p-mat"></select></label>
-        <div class="vec"><span>Position</span><input data-vec="position" data-i="0" type="number" step="0.5" /><input data-vec="position" data-i="1" type="number" step="0.5" /><input data-vec="position" data-i="2" type="number" step="0.5" /></div>
-        <div class="vec no-stamp"><span>Size</span><input data-vec="scale" data-i="0" type="number" step="0.5" min="0.05" /><input data-vec="scale" data-i="1" type="number" step="0.5" min="0.05" /><input data-vec="scale" data-i="2" type="number" step="0.5" min="0.05" /></div>
-        <div class="vec"><span>Rotation°</span><input data-vec="rotation" data-i="0" type="number" step="15" /><input data-vec="rotation" data-i="1" type="number" step="15" /><input data-vec="rotation" data-i="2" type="number" step="15" /></div>
-        <div class="vec-labels"><span></span><span>x</span><span>y</span><span>z</span></div>
+        <label class="row no-stamp" title="Solid adds blocks; Carve cuts a hole through everything above it in the list"><span>Type</span>
+          <select id="p-mode"><option value="add">Solid</option><option value="sub">Carve (cut a hole)</option></select>
+        </label>
         <div id="p-params"></div>
-        <div class="sub-h">Repeat</div>
-        <div class="repeat">
-          <label><span>Copies</span><input id="r-count" type="number" min="1" max="200" step="1" /></label>
-          <label><span>Along</span><select id="r-axis"><option value="x">x</option><option value="y">y</option><option value="z">z</option></select></label>
-          <label><span>Every</span><input id="r-spacing" type="number" step="0.5" /></label>
-        </div>
+        <details class="sub" id="p-transform">
+          <summary>Position, size &amp; rotation</summary>
+          <div class="vec"><span>Position</span><input data-vec="position" data-i="0" type="number" step="0.5" /><input data-vec="position" data-i="1" type="number" step="0.5" /><input data-vec="position" data-i="2" type="number" step="0.5" /></div>
+          <div class="vec no-stamp"><span>Size</span><input data-vec="scale" data-i="0" type="number" step="0.5" min="0.05" /><input data-vec="scale" data-i="1" type="number" step="0.5" min="0.05" /><input data-vec="scale" data-i="2" type="number" step="0.5" min="0.05" /></div>
+          <div class="vec"><span>Rotation°</span><input data-vec="rotation" data-i="0" type="number" step="15" /><input data-vec="rotation" data-i="1" type="number" step="15" /><input data-vec="rotation" data-i="2" type="number" step="15" /></div>
+          <div class="vec-labels"><span></span><span>x</span><span>y</span><span>z</span></div>
+        </details>
+        <details class="sub">
+          <summary>Part &amp; repeat</summary>
+          <label class="row" title="Group pieces (Walls, Roof…) to move, hide or view them on their own"><span>Part</span><input id="p-group" type="text" list="group-list" placeholder="none (e.g. Walls)" /></label>
+          <datalist id="group-list"></datalist>
+          <p class="pane-hint">Repeat makes copies in a row, e.g. a pillar every 6 blocks.</p>
+          <div class="repeat">
+            <label><span>Copies</span><input id="r-count" type="number" min="1" max="200" step="1" /></label>
+            <label><span>Along</span><select id="r-axis"><option value="x">x</option><option value="y">y</option><option value="z">z</option></select></label>
+            <label><span>Every</span><input id="r-spacing" type="number" step="0.5" /></label>
+          </div>
+        </details>
         <div class="btn-row">
           <button id="p-dup" title="Ctrl+D">Duplicate</button>
-          <button id="p-mirror" class="no-stamp" title="Duplicate mirrored across X">Mirror X</button>
+          <button id="p-mirror" class="no-stamp adv" title="Duplicate mirrored across X">Mirror X</button>
           <button id="p-del" class="danger" title="Delete">Delete</button>
         </div>
       </section>
@@ -98,11 +121,16 @@
 
     <main class="viewport" id="viewport">
       <canvas id="three-canvas"></canvas>
+      <div class="empty-hint" id="empty-hint" hidden>
+        <b>Your build is empty</b>
+        <p>Add something from the panel on the left. The quickest start is a 🏛 <b>Hall</b>.</p>
+        <button class="primary" id="empty-hall" type="button">🏛 Build a hall</button>
+      </div>
       <div class="layer-wrap" id="layer-wrap" hidden>
         <canvas id="layer-canvas"></canvas>
         <div class="section-bar">
           <div class="seg" id="section-mode">
-            <button data-mode="top" class="active" title="Top-down layer plan">Top · layers</button>
+            <button data-mode="top" class="active" title="Top-down plan of one layer">Top · layers</button>
             <button data-mode="front" title="Vertical cut across the hall (x · y), looking along z">Front section</button>
             <button data-mode="side" title="Vertical cut along the hall (z · y), looking along x">Side section</button>
           </div>
@@ -128,13 +156,14 @@
         <button data-gizmo="translate" class="active" title="Move (W)">✥ Move</button>
         <button data-gizmo="scale" title="Stretch (R)">⤢ Stretch</button>
         <button data-gizmo="rotate" title="Rotate (E)">⟳ Rotate</button>
-        <label class="chk"><input type="checkbox" id="snap" checked /> Snap</label>
         <span class="sep"></span>
-        <button id="btn-undo" title="Ctrl+Z">↶</button>
-        <button id="btn-redo" title="Ctrl+Y">↷</button>
-        <button id="btn-frame" title="Frame (F)">⌖</button>
-        <label class="chk" title="Show block bounds in Design view"><input type="checkbox" id="show-bounds" checked /> Bounds</label>
-        <label class="chk" title="Draw the converted blocks over the shapes"><input type="checkbox" id="show-blocks" /> Show blocks</label>
+        <button id="btn-undo" title="Undo (Ctrl+Z)">↶</button>
+        <button id="btn-redo" title="Redo (Ctrl+Y)">↷</button>
+        <button id="btn-frame" title="Zoom to selection (F)">⌖</button>
+        <span class="sep"></span>
+        <label class="chk" title="Draw the blocks over your shapes while you edit"><input type="checkbox" id="show-blocks" /> Show blocks</label>
+        <label class="chk adv" title="Moves and turns jump in whole steps"><input type="checkbox" id="snap" checked /> Snap</label>
+        <label class="chk adv" title="Show the outline of the build area"><input type="checkbox" id="show-bounds" checked /> Bounds</label>
       </div>
       <div class="toolbar" id="blocks-bar" hidden>
         <span class="lbl">Color by</span>
@@ -157,38 +186,48 @@
     </main>
 
     <aside class="panel right">
+      <section class="next-step" id="next-step">
+        <h2>Next step</h2>
+        <p>When the shape looks right, check it as real Minecraft blocks.</p>
+        <button class="primary wide" id="go-blocks" type="button">See it as blocks ›</button>
+      </section>
       <section>
-        <h2>Size in blocks</h2>
-        <label class="row" id="row-bpu"><span>Blocks / unit</span><input id="bpu" type="number" step="0.25" min="0.05" value="2" /></label>
+        <h2>Size <span class="hint">in blocks</span></h2>
         <div class="dims">
-          <label><span>W (x)</span><input id="dim-w" type="number" min="1" step="1" /></label>
-          <label><span>H (y)</span><input id="dim-h" type="number" min="1" step="1" /></label>
-          <label><span>D (z)</span><input id="dim-d" type="number" min="1" step="1" /></label>
+          <label><span>Width</span><input id="dim-w" type="number" min="1" step="1" /></label>
+          <label><span>Height</span><input id="dim-h" type="number" min="1" step="1" /></label>
+          <label><span>Depth</span><input id="dim-d" type="number" min="1" step="1" /></label>
         </div>
-        <p class="hint-line">Typing a size rescales everything once. After that, editing a shape only changes that shape.</p>
-        <div class="warn" id="scale-warn" hidden>Blocks / unit isn't a whole number, so 1-wide pillars come out uneven (some 1, some 2 blocks).
+        <p class="hint-line">Type a size to scale the whole build once.</p>
+        <div class="warn" id="scale-warn" hidden>The scale isn't a whole number, so 1-wide pillars come out uneven (some 1, some 2 blocks).
           <button id="scale-fix" type="button">Use whole blocks</button></div>
-        <label class="chk"><input type="checkbox" id="keep-prop" checked /> Keep proportions</label>
-        <div class="presets">Quick scale:
-          <button data-mult="0.5">½×</button><button data-mult="2">2×</button><button data-mult="3">3×</button>
+        <div class="adv">
+          <label class="row" id="row-bpu" title="How many blocks one design unit becomes. 1 = exact blocks."><span>Blocks / unit</span><input id="bpu" type="number" step="0.25" min="0.05" value="1" /></label>
+          <label class="chk"><input type="checkbox" id="keep-prop" checked /> Keep proportions</label>
+          <div class="presets">Quick scale:
+            <button data-mult="0.5">½×</button><button data-mult="2">2×</button><button data-mult="3">3×</button>
+          </div>
         </div>
       </section>
       <section>
-        <h2>Conversion</h2>
-        <label class="chk"><input type="checkbox" id="opt-slabs" checked /> Smooth curves with slabs</label>
-        <label class="chk"><input type="checkbox" id="opt-topslabs" checked /> Allow upside-down slabs &amp; stairs</label>
-        <label class="chk"><input type="checkbox" id="opt-stairs" checked /> Use stairs on slopes</label>
-        <label class="chk indent"><input type="checkbox" id="opt-corners" checked /> Corner stairs (inner / outer)</label>
-        <label class="chk"><input type="checkbox" id="opt-hollow" /> Hollow interior (shell only)</label>
-        <label class="row"><span>Fill threshold</span><input id="opt-threshold" type="range" min="0.2" max="0.8" step="0.05" value="0.5" /><output id="out-threshold">50%</output></label>
-        <label class="row"><span>Quality</span>
-          <select id="opt-quality"><option value="fast">Fast</option><option value="normal" selected>Normal</option><option value="high">High</option></select>
-        </label>
-        <label class="chk"><input type="checkbox" id="opt-auto" checked /> Auto-convert on change</label>
-        <button id="btn-convert" class="primary wide">Convert to blocks</button>
+        <h2>Block style</h2>
+        <label class="chk" title="Half blocks make round shapes smoother"><input type="checkbox" id="opt-slabs" checked /> Smooth curves with slabs</label>
+        <label class="chk" title="Stairs make slopes and arches smoother"><input type="checkbox" id="opt-stairs" checked /> Use stairs on slopes</label>
+        <div class="adv">
+          <label class="chk"><input type="checkbox" id="opt-topslabs" checked /> Allow upside-down slabs &amp; stairs</label>
+          <label class="chk indent"><input type="checkbox" id="opt-corners" checked /> Corner stairs (inner / outer)</label>
+          <label class="chk" title="Remove blocks nobody will ever see inside thick shapes"><input type="checkbox" id="opt-hollow" /> Hollow interior (shell only)</label>
+          <label class="row" title="How full a block's space must be before it gets a block"><span>Fill threshold</span><input id="opt-threshold" type="range" min="0.2" max="0.8" step="0.05" value="0.5" /><output id="out-threshold">50%</output></label>
+          <label class="row"><span>Quality</span>
+            <select id="opt-quality"><option value="fast">Fast</option><option value="normal" selected>Normal</option><option value="high">High</option></select>
+          </label>
+          <label class="chk"><input type="checkbox" id="opt-auto" checked /> Update blocks automatically</label>
+          <button id="btn-convert" class="wide">Update blocks now</button>
+        </div>
       </section>
-      <section>
+      <section class="view-blocks-layers" id="layer-section">
         <h2>Layer <span class="hint" id="layer-y"></span></h2>
+        <p class="pane-hint" id="layer-hint">Build from the bottom up: one layer at a time, then tick it off.</p>
         <div class="layer-ctl">
           <button id="layer-down" title="Layer down (PageDown / ↓ in Layers)">▼</button>
           <input id="layer-slider" type="range" min="0" max="0" value="0" />
@@ -196,13 +235,15 @@
         </div>
         <div class="layer-info" id="layer-info"></div>
         <label class="chk"><input type="checkbox" id="layer-built" /> Mark this layer as built</label>
-        <label class="chk"><input type="checkbox" id="layer-ghost" checked /> Show layer below (2D)</label>
+        <label class="chk adv"><input type="checkbox" id="layer-ghost" checked /> Show layer below (2D)</label>
         <label class="chk"><input type="checkbox" id="layer-all" /> Show all layers (3D)</label>
       </section>
       <section class="grow">
-        <h2>Materials</h2>
-        <div id="stats" class="stats"></div>
-        <ul id="materials" class="materials"></ul>
+        <details class="mat-details" open>
+          <summary><h2>Materials</h2></summary>
+          <div id="stats" class="stats"></div>
+          <ul id="materials" class="materials"></ul>
+        </details>
       </section>
     </aside>
   </div>
@@ -359,6 +400,25 @@
       <button id="pb-cancel" type="button">Cancel</button>
       <button id="pb-edit" type="button" title="Create and open in the stamp editor for hand edits">Create &amp; edit blocks</button>
       <button id="pb-create" type="button" class="primary">Create stamp</button>
+    </div>
+  </dialog>
+
+  <dialog id="welcome" class="welcome">
+    <h2 class="w-title"><span class="logo">▦</span> Welcome to Shape Layers</h2>
+    <p class="w-lead">Sketch a structure with simple shapes, and get a <b>layer-by-layer Minecraft build plan</b> with slabs and stairs that smooth the curves.</p>
+    <ol class="w-steps">
+      <li><b>1 · Design</b><span>Shape your build. Start with a builder (hall, wall, pillar) or combine basic shapes.</span></li>
+      <li><b>2 · Blocks</b><span>See it as real blocks. Hover any block to see exactly what it is.</span></li>
+      <li><b>3 · Layers</b><span>Follow the plan one layer at a time in-game, or export it for WorldEdit.</span></li>
+    </ol>
+    <div class="w-start">
+      <button class="card primary-card" id="w-hall" type="button"><b>🏛 Build a hall</b><small>Pillars, walls and an arched roof, ready in seconds</small></button>
+      <button class="card" id="w-example" type="button"><b>🗼 Load an example</b><small>A small tower to look around and edit</small></button>
+      <button class="card" id="w-empty" type="button"><b>□ Start empty</b><small>A blank canvas</small></button>
+    </div>
+    <div class="w-foot">
+      <span class="muted">Mouse: left-drag to orbit · right-drag to pan · wheel to zoom</span>
+      <button id="w-close" type="button">Continue my build</button>
     </div>
   </dialog>
 

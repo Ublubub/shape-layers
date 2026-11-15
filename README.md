@@ -33,6 +33,8 @@ Run the tests with `npm test` (needs Node 18 or newer).
 
 ## How to use it
 
+First time? A **welcome screen** offers one-click starts (build a hall, load an example, start empty); **? Help** brings it back. The app starts in a simple mode; switch on **Advanced** (top right) to see every fine-tuning setting (fill threshold, quality, corner stairs, scale, mirror…). Follow the numbered steps in the header: **1 Design → 2 Blocks → 3 Layers**; the *Next step* card on the right always points to what comes next.
+
 | Step | What you do |
 |---|---|
 | **1 · Design** | Add shapes. Click a shape to select it. Use the gizmo to **Move (W)**, **Stretch (R)** or **Rotate (E)**, or type exact numbers. Set a shape to **Carve** to cut holes (doors, hollow towers, arches). Shapes are applied top to bottom, so order matters for carving. |
