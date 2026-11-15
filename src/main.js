@@ -4,7 +4,7 @@ import { TransformControls } from 'three/addons/controls/TransformControls.js';
 import { SHAPE_TYPES, typeDef, defaultParams, voxelParams, buildGeometry, geometryKey, isSharedGeometry } from './shapes.js';
 import { BLOCKS, blockIndex } from './blocks.js';
 import { summarize } from './voxelizer.js';
-import { LayerView, drawLayer, LIGHT_THEME } from './layerView.js';
+import { LayerView, drawLayer, drawSection, viewDims, LIGHT_THEME } from './layerView.js';
 import { BlockView } from './blockView.js';
 import { download, toMcfunction, toSchem, materialList, stacks } from './exporters.js';
 
@@ -345,6 +345,7 @@ function setVoxels(v) {
   blockView.setLayer($('layer-all').checked ? v.H - 1 : layer);
   layerView.setVoxels(v);
   layerView.setLayer(layer);
+  updateSliceUI();
   updateLayerUI();
   renderMaterials();
 }
@@ -640,7 +641,34 @@ function renderMaterials() {
   });
 }
 
+function setSectionMode(mode) {
+  layerView.setMode(mode);
+  document.querySelectorAll('#section-mode button').forEach((b) => b.classList.toggle('active', b.dataset.mode === mode));
+  updateSliceUI();
+}
+
+function updateSliceUI() {
+  const mode = layerView.mode;
+  $('slice-wrap').hidden = mode === 'top';
+  if (mode === 'top' || !voxels) return;
+  const { N } = viewDims(voxels, mode);
+  const k = layerView.slice[mode];
+  $('slice-slider').max = N - 1;
+  $('slice-slider').value = k;
+  $('slice-label').textContent = mode === 'front' ? 'Slice z' : 'Slice x';
+  $('slice-out').textContent = `${k} / ${N - 1}`;
+}
+
+function setSlice(k) {
+  layerView.setSlice(k);
+  updateSliceUI();
+}
+
 function initLayers() {
+  document.querySelectorAll('#section-mode button').forEach((b) => b.onclick = () => setSectionMode(b.dataset.mode));
+  $('slice-slider').addEventListener('input', (e) => setSlice(+e.target.value));
+  $('slice-down').onclick = () => setSlice(layerView.slice[layerView.mode] - 1);
+  $('slice-up').onclick = () => setSlice(layerView.slice[layerView.mode] + 1);
   $('layer-slider').addEventListener('input', (e) => setLayer(+e.target.value, true));
   $('layer-up').onclick = () => setLayer(layer + 1, true);
   $('layer-down').onclick = () => setLayer(layer - 1, true);
@@ -801,7 +829,11 @@ async function doExport(kind) {
   if (kind === 'mcfunction') download(base + '.mcfunction', toMcfunction(v), 'text/plain');
   if (kind === 'schem') download(base + '.schem', await toSchem(v));
   if (kind === 'materials') download(base + '-materials.csv', materialList(summary), 'text/csv');
-  if (kind === 'layer-png') renderLayerImage(layer).toBlob((b) => download(`${base}-layer-${layer + 1}.png`, b));
+  if (kind === 'layer-png') {
+    const m = layerView.mode;
+    if (m === 'top') renderLayerImage(layer).toBlob((b) => download(`${base}-layer-${layer + 1}.png`, b));
+    else renderSectionImage(m, layerView.slice[m]).toBlob((b) => download(`${base}-${m}-${m === 'front' ? 'z' : 'x'}${layerView.slice[m]}.png`, b));
+  }
   if (kind === 'sheet') openLayerSheet();
 }
 
@@ -817,6 +849,21 @@ function renderLayerImage(y, maxPx = 1600) {
   ctx.fillStyle = '#222'; ctx.font = 'bold 14px system-ui, sans-serif'; ctx.textBaseline = 'top';
   const pl = summary.perLayer[y];
   ctx.fillText(`Layer ${y + 1} / ${v.H}  (y +${y})   ${pl.full} blocks, ${pl.slab} slabs   N ↑`, pad, 8);
+  return c;
+}
+
+function renderSectionImage(mode, k, maxPx = 1600) {
+  const v = voxels;
+  const { U, V } = viewDims(v, mode);
+  const cs = Math.max(6, Math.min(28, Math.floor(maxPx / Math.max(U, V))));
+  const pad = 30;
+  const c = document.createElement('canvas');
+  c.width = U * cs + pad * 2; c.height = V * cs + pad * 2 + 18;
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, c.width, c.height);
+  drawSection(ctx, v, mode, k, { cs, ox: pad, oy: pad + 18, ghost: true, theme: LIGHT_THEME });
+  ctx.fillStyle = '#222'; ctx.font = 'bold 14px system-ui, sans-serif'; ctx.textBaseline = 'top';
+  ctx.fillText(mode === 'front' ? `Front section at z = ${k}  (x →, y ↑)` : `Side section at x = ${k}  (z →, y ↑)`, pad, 8);
   return c;
 }
 
@@ -924,6 +971,7 @@ function initKeys() {
     else if (view === 'design' && k === 'f') frameDesign();
     else if (view === 'design' && (k === 'delete' || k === 'backspace')) deleteSelected();
     else if (view === 'design' && k === 'escape') select(null);
+    else if (view === 'layers' && layerView.mode !== 'top' && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) { e.preventDefault(); setSlice(layerView.slice[layerView.mode] + (e.key === 'ArrowRight' ? 1 : -1)); }
     else if (e.key === 'PageUp' || (view === 'layers' && e.key === 'ArrowUp')) { e.preventDefault(); setLayer(layer + 1, true); }
     else if (e.key === 'PageDown' || (view === 'layers' && e.key === 'ArrowDown')) { e.preventDefault(); setLayer(layer - 1, true); }
   });

@@ -213,3 +213,18 @@ fieldset label.chk { display: flex; }
 fieldset output { min-width: 26px; color: var(--muted); }
 fieldset input[type="number"], fieldset select { width: 100%; }
 @media (max-width: 600px) { .hall-grid { grid-template-columns: 1fr; } }
+
+/* --- section bar in the 2D view --- */
+.section-bar {
+  position: absolute; top: 34px; left: 50%; transform: translateX(-50%);
+  display: flex; gap: 10px; align-items: center; flex-wrap: wrap; justify-content: center;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 4px 6px;
+  box-shadow: 0 4px 16px rgba(0,0,0,.2); max-width: calc(100% - 24px);
+}
+.section-bar .seg { margin: 0; }
+.section-bar .seg button { padding: 4px 10px; white-space: nowrap; }
+.section-bar .slice { display: flex; align-items: center; gap: 6px; }
+.section-bar .slice[hidden] { display: none; }
+.section-bar .slice input { width: 160px; }
+.section-bar .slice button { padding: 2px 7px; }
+.section-bar output { min-width: 56px; color: var(--muted); font-variant-numeric: tabular-nums; }

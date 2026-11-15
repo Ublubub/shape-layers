@@ -37,6 +37,7 @@ Run the tests with `npm test` (needs Node 18 or newer).
 |---|---|
 | **1 · Design** | Add shapes. Click a shape to select it. Use the gizmo to **Move (W)**, **Stretch (R)** or **Rotate (E)**, or type exact numbers. Set a shape to **Carve** to cut holes (doors, hollow towers, arches). Shapes are applied top to bottom, so order matters for carving. |
 | **Hall builder** | Enter pillar count, width, gap, height and hall length. It places the pillar rows and a **vaulted roof** that lands exactly on the outer faces of the end pillars (e.g. 4 pillars, 1 wide, 5 apart = 19 blocks). Afterwards, select the roof to change its **rise**, **thickness**, **roundness** (round ↔ crushed oval ↔ boxy) and **flatten** (a segmental arch), or stretch its length. |
+| **Sections** | In **3 · Layers**, switch between **Top** (the layer plan), **Front section** (a vertical cut across the hall: x · y) and **Side section** (along the hall: z · y). Use the slice slider or ←/→ to move the cut. Slabs and stairs are drawn with their real profile, everything behind the cut is shown faded, and the header shows the width and the clear height at the center. |
 | **Repeat** | Any shape can be copied N times along x, y or z at a fixed spacing, which is handy for rows of pillars, ribs or windows. |
 | **Size** | **Scale** means *N blocks per design unit*. **Fit size** means you type the width, height or depth you want in blocks. With *Keep proportions* on, the other two follow. The ½× / 2× / 3× buttons scale the whole build up or down. |
 | **2 · Blocks** | A 3D preview made of real blocks and slabs. Move the layer slider to cut the model at a layer. Layers below it are dimmed. |
@@ -80,7 +81,8 @@ tests/            node --test
 
 ## Ideas for later
 
-- **Walls/fences** for thin parts, and **cross-section views** (cut along x or z, not just by layer)
+- **Walls/fences** for thin parts
+- **Stamps / prefabs**: hand-placed block patterns (e.g. a pillar with a stair base) placed and repeated like shapes
 - **Smooth blend** between shapes (signed distance fields with a smooth-min), so shapes melt into each other
 - **Lathe / spline tool**: draw a profile and spin it into a vase, a tower or a bell
 - **Paths**: sweep a circle along a curve for arches, bridges, tentacles

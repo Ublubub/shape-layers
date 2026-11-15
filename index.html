@@ -33,7 +33,7 @@
           <button data-export="schem">Schematic (.schem) — WorldEdit / Litematica</button>
           <button data-export="mcfunction">Commands (.mcfunction)</button>
           <button data-export="materials">Material list (.csv)</button>
-          <button data-export="layer-png">Current layer (.png)</button>
+          <button data-export="layer-png">Current 2D view — layer or section (.png)</button>
           <button data-export="sheet">Printable layer sheet</button>
         </div>
       </div>
@@ -83,6 +83,20 @@
       <canvas id="three-canvas"></canvas>
       <div class="layer-wrap" id="layer-wrap" hidden>
         <canvas id="layer-canvas"></canvas>
+        <div class="section-bar">
+          <div class="seg" id="section-mode">
+            <button data-mode="top" class="active" title="Top-down layer plan">Top · layers</button>
+            <button data-mode="front" title="Vertical cut across the hall (x · y), looking along z">Front section</button>
+            <button data-mode="side" title="Vertical cut along the hall (z · y), looking along x">Side section</button>
+          </div>
+          <label class="slice" id="slice-wrap" hidden>
+            <span id="slice-label">z</span>
+            <button id="slice-down" type="button" title="Previous slice (←)">◀</button>
+            <input id="slice-slider" type="range" min="0" max="0" value="0" />
+            <button id="slice-up" type="button" title="Next slice (→)">▶</button>
+            <output id="slice-out"></output>
+          </label>
+        </div>
         <div class="tooltip" id="tooltip" hidden></div>
         <div class="legend">
           <span><i class="sw full"></i>Full block</span>
