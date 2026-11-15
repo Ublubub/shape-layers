@@ -13,65 +13,77 @@
 //   top 4 + 1..3 of the bottom    -> upside-down stair
 // anything else falls back to comparing the lower and upper halves.
 
-import { AIR, FULL, BOTTOM, TOP, STAIR } from './blocks.js';
+import { AIR, FULL, BOTTOM, TOP, STAIR, CUSTOM } from './blocks.js';
 
-// Inside tests. `p` holds per-shape parameters, including the absolute scale
+// Shape tests. `p` holds per-shape parameters, including the absolute scale
 // (sx, sy, sz) so that thickness can be given in world units (blocks).
-export function makeTest(type, p = {}) {
+// Hollow shapes are split into an `outer` solid and a `cavity`: the shape is
+// outer AND NOT cavity. Keeping them apart lets roofs that "join" merge properly:
+// (union of outers) minus (union of cavities) -> groin vaults, T-junctions, etc.
+export function makeParts(type, p = {}) {
   const sx = p.sx || 1, sy = p.sy || 1, sz = p.sz || 1;
   const t = Math.max(0, p.thickness || 0);
   switch (type) {
-    case 'box': return (x, y, z) => x >= -0.5 && x <= 0.5 && y >= -0.5 && y <= 0.5 && z >= -0.5 && z <= 0.5;
+    case 'box': return { outer: (x, y, z) => x >= -0.5 && x <= 0.5 && y >= -0.5 && y <= 0.5 && z >= -0.5 && z <= 0.5 };
     case 'sphere': {
-      if (!t) return (x, y, z) => x * x + y * y + z * z <= 0.25;
+      const outer = (x, y, z) => x * x + y * y + z * z <= 0.25;
       const ix = 0.5 - t / sx, iy = 0.5 - t / sy, iz = 0.5 - t / sz;
-      const hollow = ix > 0 && iy > 0 && iz > 0;
-      return (x, y, z) => x * x + y * y + z * z <= 0.25 &&
-        !(hollow && (x / ix) ** 2 + (y / iy) ** 2 + (z / iz) ** 2 < 1);
+      if (!(t > 0 && ix > 0 && iy > 0 && iz > 0)) return { outer };
+      return { outer, cavity: (x, y, z) => (x / ix) ** 2 + (y / iy) ** 2 + (z / iz) ** 2 < 1 };
     }
-    case 'cylinder': return (x, y, z) => y >= -0.5 && y <= 0.5 && x * x + z * z <= 0.25;
+    case 'cylinder': return { outer: (x, y, z) => y >= -0.5 && y <= 0.5 && x * x + z * z <= 0.25 };
     case 'tube': {
       const ix = 0.5 - (t || 0.2 * sx) / sx, iz = 0.5 - (t || 0.2 * sz) / sz;
-      return (x, y, z) => y >= -0.5 && y <= 0.5 && x * x + z * z <= 0.25 &&
-        !(ix > 0 && iz > 0 && (x / ix) ** 2 + (z / iz) ** 2 < 1);
+      const outer = (x, y, z) => y >= -0.5 && y <= 0.5 && x * x + z * z <= 0.25;
+      if (!(ix > 0 && iz > 0)) return { outer };
+      return { outer, cavity: (x, y, z) => y >= -0.5 && y <= 0.5 && (x / ix) ** 2 + (z / iz) ** 2 < 1 };
     }
-    case 'cone': return (x, y, z) => {
+    case 'cone': return { outer: (x, y, z) => {
       if (y < -0.5 || y > 0.5) return false;
       const r = (0.5 - y) * 0.5;
       return x * x + z * z <= r * r;
-    };
-    case 'pyramid': return (x, y, z) => {
+    } };
+    case 'pyramid': return { outer: (x, y, z) => {
       if (y < -0.5 || y > 0.5) return false;
       const h = (0.5 - y) * 0.5;
       return x >= -h && x <= h && z >= -h && z <= h;
-    };
+    } };
     case 'dome': {
       // ellipsoid cap: radius 0.5 horizontally, height 1, base at y = -0.5
-      const ix = 0.5 - t / sx, iy = 1 - t / sy, iz = 0.5 - t / sz;
-      const hollow = t > 0 && ix > 0 && iy > 0 && iz > 0;
-      return (x, y, z) => {
+      const outer = (x, y, z) => {
         if (y < -0.5 || y > 0.5) return false;
         const dy = y + 0.5;
-        if (4 * x * x + dy * dy + 4 * z * z > 1) return false;
-        return !(hollow && (x / ix) ** 2 + (dy / iy) ** 2 + (z / iz) ** 2 < 1);
+        return 4 * x * x + dy * dy + 4 * z * z <= 1;
       };
+      const ix = 0.5 - t / sx, iy = 1 - t / sy, iz = 0.5 - t / sz;
+      if (!(t > 0 && ix > 0 && iy > 0 && iz > 0)) return { outer };
+      return { outer, cavity: (x, y, z) => y >= -0.5 && (x / ix) ** 2 + ((y + 0.5) / iy) ** 2 + (z / iz) ** 2 < 1 };
     }
-    case 'torus': return (x, y, z) => {
+    case 'torus': return { outer: (x, y, z) => {
       const q = Math.sqrt(x * x + z * z) - 0.35;
       return q * q + y * y <= 0.0225;
-    };
-    case 'wedge': return (x, y, z) => z >= -0.5 && z <= 0.5 && x >= -0.5 && y >= -0.5 && x + y <= 0;
+    } };
+    case 'wedge': return { outer: (x, y, z) => z >= -0.5 && z <= 0.5 && x >= -0.5 && y >= -0.5 && x + y <= 0 };
     case 'vault': {
       const v = vaultProfile(p);
-      return (x, y, z) => {
+      const outer = (x, y, z) => {
         if (z < -0.5 || z > 0.5 || y < -0.5 || y > 0.5) return false;
-        const ax = Math.abs(x), dy = Math.abs(y - v.yc);
-        if ((ax / v.a) ** v.n + (dy / v.b) ** v.n > 1) return false;
-        return !(v.hollow && (ax / v.ai) ** v.n + (dy / v.bi) ** v.n < 1);
+        return (Math.abs(x) / v.a) ** v.n + (Math.abs(y - v.yc) / v.b) ** v.n <= 1;
       };
+      if (!v.hollow) return { outer };
+      // the cavity runs the full length (open ends) and stops at the base
+      return { outer, cavity: (x, y, z) => z >= -0.5 && z <= 0.5 && y >= -0.5 &&
+        (Math.abs(x) / v.ai) ** v.n + (Math.abs(y - v.yc) / v.bi) ** v.n < 1 };
     }
     default: return null;
   }
+}
+
+export function makeTest(type, p = {}) {
+  const parts = makeParts(type, p);
+  if (!parts) return null;
+  const { outer, cavity } = parts;
+  return cavity ? (x, y, z) => outer(x, y, z) && !cavity(x, y, z) : outer;
 }
 
 // Barrel vault profile in unit space (span x in [-0.5, 0.5], base y = -0.5, crown y = 0.5).
@@ -113,7 +125,14 @@ export function voxelize(job, onProgress) {
   const perOct = q * q * q;
   const need = opt.threshold * perOct;
 
-  const shapes = job.shapes.map((s) => ({ ...s, test: makeTest(s.type, s.params) })).filter((s) => s.test);
+  // Joined shapes (roofs) use their outer solid; their cavities are applied after all
+  // shapes, and only carve material owned by joined shapes.
+  const shapes = job.shapes.map((s) => {
+    const parts = makeParts(s.type, s.params);
+    if (!parts) return null;
+    const joined = !!(s.join && s.add);
+    return { ...s, joined, test: joined ? parts.outer : makeTest(s.type, s.params), cavity: joined ? parts.cavity || null : null };
+  }).filter(Boolean);
   const total = W * H * D;
   const kind = new Uint8Array(total);
   const mat = new Uint8Array(total);
@@ -157,14 +176,18 @@ export function voxelize(job, onProgress) {
                 const pz = z0 + fz * cz;
                 for (const fx of fr[hx]) {
                   const px = x0 + fx * cx;
-                  let occ = false, owner = 0;
+                  let occ = false, owner = 0, ownerJoined = false, inCavity = false;
                   for (let n = 0; n < active.length; n++) {
                     const s = active[n], m = s.inv;
                     const lx = m[0] * px + m[4] * py + m[8] * pz + m[12];
                     const ly = m[1] * px + m[5] * py + m[9] * pz + m[13];
                     const lz = m[2] * px + m[6] * py + m[10] * pz + m[14];
-                    if (s.test(lx, ly, lz)) { if (s.add) { occ = true; owner = s.mat; } else occ = false; }
+                    if (s.test(lx, ly, lz)) {
+                      if (s.add) { occ = true; owner = s.mat; ownerJoined = s.joined; } else occ = false;
+                    }
+                    if (s.cavity && !inCavity && s.cavity(lx, ly, lz)) inCavity = true;
                   }
+                  if (occ && ownerJoined && inCavity) occ = false;
                   if (occ) { oct[bit]++; counts[owner]++; }
                 }
               }
@@ -192,7 +215,15 @@ export function voxelize(job, onProgress) {
   }
 
   if (opt.hollow) hollowOut(kind, W, H, D);
-  return { W, H, D, kind, mat, meta };
+  // stamps: exact blocks pasted on top of everything ([cellIndex, paletteIndex] pairs)
+  const custom = job.custom || [];
+  const cells = job.stampCells || [];
+  for (let n = 0; n + 1 < cells.length; n += 2) {
+    const idx = cells[n];
+    if (idx < 0 || idx >= total) continue;
+    kind[idx] = CUSTOM; meta[idx] = cells[n + 1]; mat[idx] = 0;
+  }
+  return { W, H, D, kind, mat, meta, custom };
 }
 
 function decide(mask, lo, hi, needHalf, opt, canStair) {
@@ -235,19 +266,26 @@ export function hollowOut(kind, W, H, D) {
 
 export function summarize(v, materialCount) {
   const perMat = Array.from({ length: materialCount }, () => ({ full: 0, slab: 0, stair: 0 }));
+  const perCustom = new Map(); // block id -> count
   const perLayer = [];
   const WD = v.W * v.D;
-  let full = 0, slab = 0, stair = 0;
+  let full = 0, slab = 0, stair = 0, custom = 0;
   for (let y = 0; y < v.H; y++) {
-    let lf = 0, ls = 0, lt = 0;
+    let lf = 0, ls = 0, lt = 0, lc = 0;
     for (let i = y * WD, e = i + WD; i < e; i++) {
       const k = v.kind[i];
       if (!k) continue;
+      if (k === CUSTOM) {
+        lc++;
+        const id = String(v.custom[v.meta[i]]).split('[')[0];
+        perCustom.set(id, (perCustom.get(id) || 0) + 1);
+        continue;
+      }
       const m = perMat[v.mat[i]];
       if (k === FULL) { lf++; m.full++; } else if (k === STAIR) { lt++; m.stair++; } else { ls++; m.slab++; }
     }
-    perLayer.push({ full: lf, slab: ls, stair: lt });
-    full += lf; slab += ls; stair += lt;
+    perLayer.push({ full: lf, slab: ls, stair: lt, custom: lc });
+    full += lf; slab += ls; stair += lt; custom += lc;
   }
-  return { full, slab, stair, perMat, perLayer };
+  return { full, slab, stair, custom, perMat, perCustom, perLayer };
 }

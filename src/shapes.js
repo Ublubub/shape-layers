@@ -4,19 +4,20 @@ import { vaultProfile } from './voxelizer.js';
 // Shape-specific parameters shown in the properties panel.
 const THICKNESS = (def, hint) => ({ key: 'thickness', label: 'Shell thickness', min: 0, max: 50, step: 0.5, def, hint });
 const ROUNDNESS = { key: 'roundness', label: 'Roundness', min: 1, max: 6, step: 0.1, def: 2, hint: '2 = oval/circle · higher = boxier · lower = pointier' };
+const JOIN = (def) => ({ key: 'join', type: 'bool', label: 'Join with other roofs', def, hint: 'hollow insides merge with other joined shapes (crossings, branches)' });
 const FLATTEN = { key: 'flatten', label: 'Flatten', min: 0, max: 0.9, step: 0.05, def: 0, hint: '0 = springs vertically · higher = flatter segment of the curve' };
 
 // Display geometry for each unit primitive. Must match the inside tests in voxelizer.js:
 // every shape fits the cube [-0.5, 0.5]^3 in its own local space.
 export const SHAPE_TYPES = [
   { type: 'box',      label: 'Box',      icon: '■', scale: [4, 4, 4] },
-  { type: 'sphere',   label: 'Sphere',   icon: '●', scale: [6, 6, 6], params: [THICKNESS(0, 'in blocks · 0 = solid')] },
+  { type: 'sphere',   label: 'Sphere',   icon: '●', scale: [6, 6, 6], params: [THICKNESS(0, 'in blocks · 0 = solid'), JOIN(false)] },
   { type: 'cylinder', label: 'Cylinder', icon: '▮', scale: [4, 6, 4] },
-  { type: 'tube',     label: 'Tube',     icon: '◎', scale: [6, 6, 6], params: [THICKNESS(1, 'wall thickness in blocks')] },
+  { type: 'tube',     label: 'Tube',     icon: '◎', scale: [6, 6, 6], params: [THICKNESS(1, 'wall thickness in blocks'), JOIN(false)] },
   { type: 'cone',     label: 'Cone',     icon: '▲', scale: [5, 6, 5] },
   { type: 'pyramid',  label: 'Pyramid',  icon: '△', scale: [6, 5, 6] },
-  { type: 'dome',     label: 'Dome',     icon: '◠', scale: [8, 4, 8], params: [THICKNESS(0, 'in blocks · 0 = solid')] },
-  { type: 'vault',    label: 'Vault',    icon: '⌒', scale: [19, 6, 24], params: [THICKNESS(1, 'roof thickness in blocks · 0 = solid'), ROUNDNESS, FLATTEN] },
+  { type: 'dome',     label: 'Dome',     icon: '◠', scale: [8, 4, 8], params: [THICKNESS(0, 'in blocks · 0 = solid'), JOIN(true)] },
+  { type: 'vault',    label: 'Vault',    icon: '⌒', scale: [19, 6, 24], params: [THICKNESS(1, 'roof thickness in blocks · 0 = solid'), ROUNDNESS, FLATTEN, JOIN(true)] },
   { type: 'torus',    label: 'Torus',    icon: '◯', scale: [8, 8, 8] },
   { type: 'wedge',    label: 'Ramp',     icon: '◣', scale: [4, 4, 4] },
 ];

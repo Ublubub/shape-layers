@@ -1,4 +1,5 @@
-import { BLOCKS, FULL, BOTTOM, TOP, STAIR, stairInfo, blockLabel } from './blocks.js';
+import { BLOCKS, FULL, BOTTOM, TOP, STAIR, CUSTOM, stairInfo, blockLabel } from './blocks.js';
+import { parseState, stateMask, stateColor, stateLabel } from './blockstates.js';
 
 const DIRS = { north: [0, -1], south: [0, 1], east: [1, 0], west: [-1, 0] };
 function drawArrow(ctx, x, y, r, facing, color) {
@@ -37,9 +38,29 @@ export function drawLayer(ctx, v, y, opts) {
       const k = kind[i];
       if (!k) continue;
       const px = ox + x * cs, py = oy + z * cs;
-      const col = BLOCKS[mat[i]].color;
+      const col = k === CUSTOM ? stateColor(v.custom[v.meta[i]]) : BLOCKS[mat[i]].color;
       ctx.fillStyle = col;
-      if (k === FULL) {
+      if (k === CUSTOM) {
+        // exact block: quarters that are full height are solid, others tinted; letter + facing arrow
+        const st = parseState(v.custom[v.meta[i]]);
+        const m = stateMask(v.custom[v.meta[i]]);
+        const h = cs / 2;
+        ctx.globalAlpha = 0.4;
+        ctx.fillRect(px, py, cs, cs);
+        ctx.globalAlpha = 1;
+        for (let qi = 0; qi < 4; qi++) {
+          if ((m >> qi) & 1 && (m >> (qi + 4)) & 1) ctx.fillRect(px + (qi & 1) * h, py + (qi >> 1) * h, h, h);
+        }
+        if (cs >= 12) {
+          ctx.fillStyle = theme.slabText;
+          ctx.font = `bold ${Math.floor(cs * 0.38)}px system-ui, sans-serif`;
+          ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+          ctx.fillText(st.name.replace('stripped_', '')[0].toUpperCase(), px + 2, py + 1);
+          if (st.props.facing && DIRS[st.props.facing]) drawArrow(ctx, px + h, py + h, cs * 0.25, st.props.facing, theme.slabMark);
+        }
+        ctx.strokeStyle = theme.custom; ctx.lineWidth = 1;
+        ctx.strokeRect(px + 0.5, py + 0.5, cs - 1, cs - 1);
+      } else if (k === FULL) {
         ctx.fillRect(px, py, cs, cs);
       } else if (k === STAIR) {
         // stair: tinted cell, the full-height quarters solid, arrow toward facing
@@ -99,15 +120,16 @@ export function drawLayer(ctx, v, y, opts) {
 
 export const LIGHT_THEME = {
   bg: '#ffffff', ghost: 'rgba(0,0,0,0.10)', grid: 'rgba(0,0,0,0.12)', grid5: 'rgba(0,0,0,0.3)',
-  grid10: 'rgba(0,0,0,0.6)', center: '#e0457b', slabMark: 'rgba(255,255,255,0.95)', slabText: 'rgba(0,0,0,0.7)',
+  grid10: 'rgba(0,0,0,0.6)', center: '#e0457b', slabMark: 'rgba(255,255,255,0.95)', slabText: 'rgba(0,0,0,0.7)', custom: '#7048e8',
 };
 export const DARK_THEME = {
   bg: '#1b1d22', ghost: 'rgba(255,255,255,0.10)', grid: 'rgba(255,255,255,0.08)', grid5: 'rgba(255,255,255,0.22)',
-  grid10: 'rgba(255,255,255,0.45)', center: '#ff6b9a', slabMark: 'rgba(255,255,255,0.95)', slabText: 'rgba(255,255,255,0.85)',
+  grid10: 'rgba(255,255,255,0.45)', center: '#ff6b9a', slabMark: 'rgba(255,255,255,0.95)', slabText: 'rgba(255,255,255,0.85)', custom: '#b197fc',
 };
 
 // Octant mask (bit = x + 2*z + 4*y) for any voxel kind.
-export function octMask(kind, meta) {
+export function octMask(kind, meta, v) {
+  if (kind === CUSTOM) return stateMask(v.custom[meta]);
   if (kind === FULL) return 0xff;
   if (kind === BOTTOM) return 0x0f;
   if (kind === TOP) return 0xf0;
@@ -181,9 +203,9 @@ export function drawSection(ctx, v, mode, k, opts) {
       const i = sectionIndex(v, mode, u, row, k);
       const kd = kind[i];
       if (!kd) continue;
-      const m = octMask(kd, meta[i]);
+      const m = octMask(kd, meta[i], v);
       const px = ox + u * cs, py = oy + row * cs;
-      ctx.fillStyle = BLOCKS[mat[i]].color;
+      ctx.fillStyle = kd === CUSTOM ? stateColor(v.custom[meta[i]]) : BLOCKS[mat[i]].color;
       for (let hv = 0; hv < 2; hv++) {
         for (let hu = 0; hu < 2; hu++) {
           // the two octants along the viewing direction
@@ -366,7 +388,7 @@ export class LayerView {
       where = this.mode === 'front' ? `x ${u}, y ${y}` : `z ${u}, y ${y}`;
     }
     const k = this.v.kind[i];
-    const name = k ? blockLabel(this.v.mat[i], k, this.v.meta[i]) : 'air';
+    const name = !k ? 'air' : k === CUSTOM ? stateLabel(this.v.custom[this.v.meta[i]]) + ' · stamp' : blockLabel(this.v.mat[i], k, this.v.meta[i]);
     this.tooltip.textContent = `${where} — ${name}`;
     this.tooltip.hidden = false;
     this.tooltip.style.left = (e.clientX - r.left + 14) + 'px';

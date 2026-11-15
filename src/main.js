@@ -3,9 +3,12 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { TransformControls } from 'three/addons/controls/TransformControls.js';
 import { SHAPE_TYPES, typeDef, defaultParams, voxelParams, buildGeometry, geometryKey, isSharedGeometry } from './shapes.js';
 import { BLOCKS, blockIndex } from './blocks.js';
+import { StampEditor, stampGeometry } from './stampEditor.js';
+import { pillarTemplate, stampCells, stampFromFile, newStamp } from './stampData.js';
+import { stateColor } from './blockstates.js';
 import { summarize } from './voxelizer.js';
 import { LayerView, drawLayer, drawSection, viewDims, LIGHT_THEME } from './layerView.js';
-import { BlockView } from './blockView.js';
+import { BlockView, buildBlockGroup, disposeBlockGroup } from './blockView.js';
 import { download, toMcfunction, toSchem, materialList, stacks } from './exporters.js';
 
 const $ = (id) => document.getElementById(id);
@@ -29,6 +32,13 @@ let nextId = 1;
 let view = 'design';
 let voxels = null, summary = null;
 let layer = 0;
+let stamps = [];          // stamp library (part of the project)
+let overlayOn = false;    // show converted blocks over the shapes in Design view
+let overlayGroup = null;
+
+const stampById = (id) => stamps.find((t) => t.id === id) || null;
+// design units per block (stamps are block-exact, so they need this to size their mesh)
+const stampUnit = () => (settings.sizeMode === 'scale' ? 1 / settings.bpu : 1);
 
 function makeShape(type, over = {}) {
   const def = typeDef(type);
@@ -135,10 +145,13 @@ function repeatOffsets(s) {
 function syncMesh(s) {
   const mesh = meshes.get(s.id);
   if (!mesh) return;
-  const key = geometryKey(s);
+  const stamp = s.type === 'stamp' ? stampById(s.stampId) : null;
+  const key = s.type === 'stamp' ? `stamp|${s.stampId}|${stamp ? stamp.rev : 'x'}|${stampUnit()}` : geometryKey(s);
   if (mesh.userData.geoKey !== key) {
     if (mesh.userData.geoKey && !isSharedGeometry(mesh.geometry)) mesh.geometry.dispose();
-    mesh.geometry = buildGeometry(s);
+    mesh.geometry = s.type === 'stamp'
+      ? stampGeometry(stamp || { size: [1, 1, 1], blocks: {} }, stampUnit())
+      : buildGeometry(s);
     mesh.userData.edges.geometry.dispose();
     mesh.userData.edges.geometry = new THREE.EdgesGeometry(mesh.geometry, 25);
     mesh.userData.geoKey = key;
@@ -155,9 +168,13 @@ function syncMesh(s) {
     mesh.renderOrder = 2;
     e.color.set(sel ? 0xffc94a : 0xff5a5a); e.opacity = 0.9;
   } else {
-    m.color.set(BLOCKS[blockIndex(s.material)].color); m.transparent = false; m.opacity = 1; m.depthWrite = true;
+    const isStamp = s.type === 'stamp';
+    if (m.vertexColors !== isStamp) { m.vertexColors = isStamp; }
+    m.color.set(isStamp ? 0xffffff : BLOCKS[blockIndex(s.material)].color);
+    // with the block overlay on, shapes become faint ghosts
+    m.transparent = overlayOn; m.opacity = overlayOn ? 0.12 : 1; m.depthWrite = !overlayOn;
     mesh.renderOrder = 0;
-    e.color.set(sel ? 0xffc94a : 0x000000); e.opacity = sel ? 1 : 0.25;
+    e.color.set(sel ? 0xffc94a : 0x000000); e.opacity = sel ? 1 : overlayOn ? 0.15 : isStamp ? 0.1 : 0.25;
   }
   m.emissive.set(sel ? 0x2a2000 : 0x000000);
   m.needsUpdate = true;
@@ -194,6 +211,13 @@ function shapeMatrices(s) {
 
 function shapeBoxes(s) {
   const mesh = meshes.get(s.id);
+  if (s.type === 'stamp') {
+    // full stamp footprint, even where the outer blocks are thin (trapdoors, lanterns...)
+    const st = stampById(s.stampId), u = stampUnit();
+    const [W, H, D] = st ? st.size : [1, 1, 1];
+    const local = new THREE.Box3(new THREE.Vector3(-W / 2 * u, 0, -D / 2 * u), new THREE.Vector3(W / 2 * u, H * u, D / 2 * u));
+    return shapeMatrices(s).map((m) => local.clone().applyMatrix4(m));
+  }
   if (!mesh.geometry.boundingBox) mesh.geometry.computeBoundingBox();
   return shapeMatrices(s).map((m) => {
     // precise box: transform the vertices
@@ -210,6 +234,13 @@ function readMesh(s) {
   s.position = mesh.position.toArray().map(r3);
   s.rotation = [mesh.rotation.x, mesh.rotation.y, mesh.rotation.z].map((v) => r3(v / DEG));
   s.scale = mesh.scale.toArray().map(r3);
+  if (s.type === 'stamp') normalizeStamp(s);
+}
+
+// stamps only turn in 90° steps around y and never stretch
+function normalizeStamp(s) {
+  s.rotation = [0, ((Math.round(s.rotation[1] / 90) * 90) % 360 + 360) % 360, 0];
+  s.scale = [1, 1, 1];
 }
 
 function rebuildMeshes() {
@@ -289,13 +320,13 @@ function convert() {
     dims,
     origin: box.min.toArray(),
     cell: size.map((v, i) => v / dims[i]),
-    shapes: shapes.filter((s) => s.visible).flatMap((s) => {
+    shapes: shapes.filter((s) => s.visible && s.type !== 'stamp').flatMap((s) => {
       const boxes = shapeBoxes(s);
       const params = voxelParams(s);
       return shapeMatrices(s).map((m, i) => {
         const bb = boxes[i].expandByScalar(1e-4);
         return {
-          type: s.type, add: s.mode === 'add', mat: blockIndex(s.material), params,
+          type: s.type, add: s.mode === 'add', mat: blockIndex(s.material), params, join: !!params.join,
           inv: Array.from(m.clone().invert().elements),
           aabb: [...bb.min.toArray(), ...bb.max.toArray()],
         };
@@ -307,6 +338,7 @@ function convert() {
       threshold: settings.threshold, quality: settings.quality, materialCount: BLOCKS.length,
     },
   };
+  addStampCells(job);
   if (busy && worker) { worker.terminate(); worker = null; }
   if (!worker) {
     worker = new Worker(new URL('./voxel-worker.js', import.meta.url), { type: 'module' });
@@ -315,8 +347,42 @@ function convert() {
   }
   busy = true;
   const id = ++jobId;
+  jobGeom = { id, origin: job.origin, cell: job.cell };
   $('progress').hidden = false; $('progress').firstElementChild.style.width = '0%';
   worker.postMessage({ id, job });
+}
+
+let jobGeom = null;
+
+// Stamps are pasted block-for-block into the grid after conversion.
+function addStampCells(job) {
+  const custom = [], index = new Map();
+  const palette = (st) => {
+    let i = index.get(st);
+    if (i === undefined) { i = Math.min(255, custom.length); if (custom.length < 256) custom.push(st); index.set(st, i); }
+    return i;
+  };
+  const grid = { origin: job.origin, cell: job.cell, dims: job.dims };
+  const cells = [];
+  const v = new THREE.Vector3();
+  for (const s of shapes) {
+    if (s.type !== 'stamp' || !s.visible) continue;
+    const st = stampById(s.stampId);
+    if (!st) continue;
+    const u = stampUnit();
+    // three.js +90° about y turns east toward north (counter-clockwise from above)
+    const turns = ((4 - Math.round(s.rotation[1] / 90)) % 4 + 4) % 4;
+    for (const M of shapeMatrices(s)) {
+      const placement = {
+        turns,
+        toWorld: (lx, ly, lz) => { v.set((lx - st.size[0] / 2) * u, ly * u, (lz - st.size[2] / 2) * u).applyMatrix4(M); return [v.x, v.y, v.z]; },
+      };
+      const out = stampCells(st, placement, grid, palette);
+      for (let i = 0; i < out.length; i++) cells.push(out[i]);
+    }
+  }
+  job.custom = custom;
+  job.stampCells = cells;
 }
 
 function onWorkerMessage(e) {
@@ -326,6 +392,7 @@ function onWorkerMessage(e) {
   busy = false;
   $('progress').hidden = true;
   if (d.error) { $('help').textContent = 'Conversion failed: ' + d.error; return; }
+  if (jobGeom && jobGeom.id === d.id) { d.result.origin = jobGeom.origin; d.result.cell = jobGeom.cell; }
   setVoxels(d.result);
 }
 
@@ -333,7 +400,7 @@ function setVoxels(v) {
   voxels = v;
   if (!v) {
     summary = null;
-    renderMaterials(); updateLayerUI();
+    renderMaterials(); updateLayerUI(); updateOverlay();
     return;
   }
   summary = summarize(v, BLOCKS.length);
@@ -346,8 +413,27 @@ function setVoxels(v) {
   layerView.setVoxels(v);
   layerView.setLayer(layer);
   updateSliceUI();
+  updateOverlay();
   updateLayerUI();
   renderMaterials();
+}
+
+function updateOverlay() {
+  disposeBlockGroup(overlayGroup);
+  overlayGroup = null;
+  if (!overlayOn || !voxels || !voxels.origin) return;
+  overlayGroup = buildBlockGroup(voxels);
+  overlayGroup.position.fromArray(voxels.origin);
+  overlayGroup.scale.fromArray(voxels.cell);
+  scene.add(overlayGroup);
+}
+
+function setOverlay(on) {
+  overlayOn = on;
+  $('show-blocks').checked = on;
+  shapes.forEach(syncMesh);
+  if (on && !voxels) convert();
+  updateOverlay();
 }
 
 // ---------------------------------------------------------------- UI: shapes
@@ -382,7 +468,7 @@ function renderShapeList() {
   shapes.forEach((s, idx) => {
     const li = document.createElement('li');
     li.className = (s.id === selectedId ? 'sel ' : '') + (s.visible ? '' : 'hidden-shape');
-    const color = s.mode === 'sub' ? 'transparent' : BLOCKS[blockIndex(s.material)].color;
+    const color = s.mode === 'sub' ? 'transparent' : s.type === 'stamp' ? 'linear-gradient(135deg,#7048e8,#b197fc)' : BLOCKS[blockIndex(s.material)].color;
     const border = s.mode === 'sub' ? 'border:1px dashed var(--sub)' : '';
     li.innerHTML = `
       <span class="sw" style="background:${color};${border}"></span>
@@ -409,6 +495,10 @@ function select(id) {
   for (const s of shapes) if (s.id === prev || s.id === id) syncMesh(s);
   const s = selected();
   if (s && view === 'design') tc.attach(meshes.get(s.id)); else tc.detach();
+  const snapOn = $('snap').checked;
+  tc.setRotationSnap(s && s.type === 'stamp' ? 90 * DEG : snapOn ? 15 * DEG : null);
+  if (s && s.type === 'stamp') { tc.showX = tc.mode !== 'rotate'; tc.showZ = tc.mode !== 'rotate'; if (tc.mode === 'scale') setGizmo('translate'); }
+  else { tc.showX = true; tc.showZ = true; }
   renderShapeList();
   renderParams();
   fillProps();
@@ -420,10 +510,21 @@ function renderParams() {
   const s = selected();
   wrap.innerHTML = '';
   wrap.dataset.for = s ? s.id + s.type : '';
-  if (!s) return;
+  if (!s || s.type === 'stamp') return;
+  if (s.type === 'vault') wrap.appendChild(vaultControls(s));
   for (const d of typeDef(s.type).params || []) {
     const row = document.createElement('div');
     row.className = 'param';
+    if (d.type === 'bool') {
+      row.innerHTML = `<label class="chk"><input type="checkbox" data-param="${d.key}" /> ${d.label}</label>` + (d.hint ? `<small>${d.hint}</small>` : '');
+      const el = row.querySelector('input');
+      el.addEventListener('change', () => {
+        s.params = { ...defaultParams(s.type), ...(s.params || {}), [d.key]: el.checked };
+        commit();
+      });
+      wrap.appendChild(row);
+      continue;
+    }
     const isRange = d.max - d.min <= 10;
     row.innerHTML = `<div class="top"><span>${d.label}</span><input type="number" min="${d.min}" max="${d.max}" step="${d.step}" data-param="${d.key}" /></div>` +
       (isRange ? `<input type="range" min="${d.min}" max="${d.max}" step="${d.step}" data-param="${d.key}" />` : '') +
@@ -442,6 +543,77 @@ function renderParams() {
   }
 }
 
+// Span / rise sliders for a vault. Rise keeps the base where it is (so the roof stays on
+// its pillars); "keep ratio" makes the rise follow the span.
+function vaultControls(s) {
+  const box = document.createElement('div');
+  box.className = 'vault-box';
+  box.innerHTML = `
+    <div class="param"><div class="top"><span>Span (width)</span><input type="number" min="1" max="400" step="1" data-vault="span" /></div>
+      <input type="range" min="3" max="120" step="1" data-vault="span" /></div>
+    <div class="param"><div class="top"><span>Rise (roof height)</span><input type="number" min="0.5" max="200" step="0.5" data-vault="rise" /></div>
+      <input type="range" min="1" max="60" step="0.5" data-vault="rise" /></div>
+    <div class="ratio-row"><span>rise / span <b data-vault="ratio"></b></span>
+      <button type="button" data-ratio="0.5" title="Semicircle">½</button><button type="button" data-ratio="0.3333" title="Squashed">⅓</button><button type="button" data-ratio="0.25" title="Flat">¼</button>
+      <label class="chk" title="Changing the span also scales the rise"><input type="checkbox" data-vault="lock" /> keep ratio</label></div>
+    <div class="sub-h">Connect another roof</div>
+    <div class="btn-row">
+      <button type="button" data-connect="cross" title="A second vault crossing this one at 90° (groin vault)">✚ Crossing 90°</button>
+      <button type="button" data-connect="branch" title="A vault leaving this one at 90° from its center (T-junction)">⊢ Branch 90°</button>
+    </div>
+    <small>Roofs with "Join with other roofs" on merge automatically: change either roof's rise, span or shape and the intersection follows.</small>`;
+  const base = () => s.position[1] - Math.abs(s.scale[1]) / 2;
+  const setRise = (r) => {
+    const b = base();
+    s.scale[1] = Math.max(0.5, r);
+    s.position[1] = b + s.scale[1] / 2;
+  };
+  const setSpan = (w) => {
+    const ratio = Math.abs(s.scale[1] / s.scale[0]);
+    s.scale[0] = Math.max(1, w) * Math.sign(s.scale[0] || 1);
+    if (s.params && s.params.lockRatio) setRise(Math.abs(s.scale[0]) * ratio);
+  };
+  box.querySelectorAll('[data-vault="span"]').forEach((el) => {
+    el.addEventListener('input', () => { const v = parseFloat(el.value); if (Number.isFinite(v)) { setSpan(v); syncMesh(s); fillProps(); updateDims(); } });
+    el.addEventListener('change', () => commit());
+  });
+  box.querySelectorAll('[data-vault="rise"]').forEach((el) => {
+    el.addEventListener('input', () => { const v = parseFloat(el.value); if (Number.isFinite(v)) { setRise(v); syncMesh(s); fillProps(); updateDims(); } });
+    el.addEventListener('change', () => commit());
+  });
+  box.querySelectorAll('[data-ratio]').forEach((b) => b.onclick = () => {
+    setRise(Math.round(Math.abs(s.scale[0]) * parseFloat(b.dataset.ratio) * 2) / 2);
+    syncMesh(s); fillProps(); commit();
+  });
+  box.querySelector('[data-vault="lock"]').onchange = (e) => { s.params = { ...(s.params || {}), lockRatio: e.target.checked }; commit(); };
+  box.querySelectorAll('[data-connect]').forEach((b) => b.onclick = () => connectVault(s, b.dataset.connect));
+  return box;
+}
+
+// Add a second vault at 90°: a full crossing through the center, or a branch from the center outward.
+function connectVault(s, kind) {
+  const span = Math.abs(s.scale[0]), rise = Math.abs(s.scale[1]);
+  const base = s.position[1] - rise / 2;
+  const rotY = s.rotation[1] * DEG;
+  // this vault's local x axis (across its span) in world space
+  const ax = [Math.cos(rotY), 0, -Math.sin(rotY)];
+  const length = kind === 'cross' ? span * 3 : span * 1.5;
+  const off = kind === 'cross' ? 0 : length / 2;
+  s.params = { ...defaultParams('vault'), ...(s.params || {}), join: true };
+  const c = makeShape('vault', {
+    name: kind === 'cross' ? `${s.name} crossing` : `${s.name} branch`,
+    material: s.material,
+    position: [s.position[0] + ax[0] * off, base + rise / 2, s.position[2] + ax[2] * off],
+    rotation: [0, ((s.rotation[1] + 90) % 360), 0],
+    scale: [span, rise, length],
+    params: { ...defaultParams('vault'), ...s.params, join: true, lockRatio: false },
+  });
+  shapes.splice(shapes.indexOf(s) + 1, 0, c);
+  buildMesh(c);
+  select(c.id);
+  commit();
+}
+
 function fillProps() {
   const s = selected();
   $('props').hidden = !s;
@@ -449,12 +621,25 @@ function fillProps() {
   if ($('p-params').dataset.for !== s.id + s.type) renderParams();
   const set = (el, v) => { if (document.activeElement !== el) el.value = v; };
   set($('p-name'), s.name);
+  $('props').classList.toggle('is-stamp', s.type === 'stamp');
+  if (s.type === 'stamp') {
+    const st = stampById(s.stampId);
+    $('p-stamp-name').textContent = st ? `${st.name} (${st.size.join(' × ')})` : 'missing stamp';
+  }
   $('p-mode').value = s.mode;
   $('p-mat').value = s.material;
   $('p-mat').disabled = s.mode === 'sub';
   document.querySelectorAll('[data-vec]').forEach((el) => set(el, s[el.dataset.vec][+el.dataset.i]));
   const p = { ...defaultParams(s.type), ...(s.params || {}) };
-  document.querySelectorAll('#p-params [data-param]').forEach((el) => set(el, p[el.dataset.param]));
+  document.querySelectorAll('#p-params [data-param]').forEach((el) => { if (el.type === 'checkbox') el.checked = !!p[el.dataset.param]; else set(el, p[el.dataset.param]); });
+  if (s.type === 'vault') {
+    document.querySelectorAll('[data-vault="span"]').forEach((el) => set(el, Math.abs(s.scale[0])));
+    document.querySelectorAll('[data-vault="rise"]').forEach((el) => set(el, Math.abs(s.scale[1])));
+    const r = document.querySelector('[data-vault="ratio"]');
+    if (r) r.textContent = (Math.abs(s.scale[1]) / Math.abs(s.scale[0])).toFixed(2);
+    const lock = document.querySelector('[data-vault="lock"]');
+    if (lock) lock.checked = !!(s.params && s.params.lockRatio);
+  }
   const r = s.repeat || defaultRepeat();
   set($('r-count'), r.count); $('r-axis').value = r.axis; set($('r-spacing'), r.spacing);
 }
@@ -477,6 +662,7 @@ function initProps() {
       if (!Number.isFinite(v)) return;
       if (el.dataset.vec === 'scale' && Math.abs(v) < 0.05) return;
       s[el.dataset.vec][+el.dataset.i] = v;
+      if (s.type === 'stamp') normalizeStamp(s);
       syncMesh(s); updateDims();
     });
     el.addEventListener('change', () => commit());
@@ -492,6 +678,7 @@ function initProps() {
     $(id).addEventListener('input', repeatInput);
     $(id).addEventListener('change', () => { repeatInput(); commit(); });
   });
+  $('p-edit-stamp').onclick = () => { const s = selected(); if (s && s.type === 'stamp') editStamp(s.stampId); };
   $('p-dup').onclick = () => duplicate(false);
   $('p-mirror').onclick = () => duplicate(true);
   $('p-del').onclick = deleteSelected;
@@ -615,7 +802,7 @@ function updateLayerUI() {
   const pl = summary.perLayer[layer];
   $('layer-y').textContent = `${layer + 1} / ${v.H}`;
   const doneCount = [...built].filter((y) => y < v.H).length;
-  $('layer-info').innerHTML = `Layer <b>${layer + 1}</b> (y +${layer}) · <b>${pl.full}</b> blocks · <b>${pl.slab}</b> slabs · <b>${pl.stair}</b> stairs` +
+  $('layer-info').innerHTML = `Layer <b>${layer + 1}</b> (y +${layer}) · <b>${pl.full}</b> blocks · <b>${pl.slab}</b> slabs · <b>${pl.stair}</b> stairs` + (pl.custom ? ` · <b>${pl.custom}</b> stamp blocks` : '') +
     (built.has(layer) ? ' · ✅ built' : '') + `<br><small>${doneCount} of ${v.H} layers marked built</small>`;
   $('layer-built').checked = built.has(layer);
 }
@@ -624,9 +811,9 @@ function renderMaterials() {
   const ul = $('materials');
   ul.innerHTML = '';
   if (!summary) { $('stats').textContent = ''; return; }
-  const { full, slab, stair, perMat } = summary;
-  const raw = full + Math.ceil(slab / 2) + Math.ceil(stair / 4) * 6;
-  $('stats').innerHTML = `<b>${(full + slab + stair).toLocaleString()}</b> pieces · ${full.toLocaleString()} blocks + ${slab.toLocaleString()} slabs + ${stair.toLocaleString()} stairs<br>` +
+  const { full, slab, stair, perMat, custom = 0 } = summary;
+  const raw = full + Math.ceil(slab / 2) + Math.ceil(stair / 4) * 6 + custom;
+  $('stats').innerHTML = `<b>${(full + slab + stair + custom).toLocaleString()}</b> pieces · ${full.toLocaleString()} blocks + ${slab.toLocaleString()} slabs + ${stair.toLocaleString()} stairs` + (custom ? ` + ${custom.toLocaleString()} stamp blocks` : '') + '<br>' +
     `≈ ${(raw / 1728).toFixed(2)} shulker boxes of raw blocks`;
   perMat.forEach((m, i) => {
     if (!m.full && !m.slab && !m.stair) return;
@@ -639,6 +826,12 @@ function renderMaterials() {
     li.innerHTML = `<span class="sw" style="background:${b.color}"></span><div><b>${b.name}</b><br>${parts.join('<br>')}</div>`;
     ul.appendChild(li);
   });
+  for (const [id, n] of [...(summary.perCustom || new Map())].sort((a, b) => b[1] - a[1])) {
+    const li = document.createElement('li');
+    li.innerHTML = `<span class="sw" style="background:${stateColor(id)}"></span><div><b></b><br>${n} <small>${stacks(n)} · from stamps</small></div>`;
+    li.querySelector('b').textContent = id.replace('minecraft:', '').replace(/_/g, ' ');
+    ul.appendChild(li);
+  }
 }
 
 function setSectionMode(mode) {
@@ -684,6 +877,7 @@ function setView(v) {
   document.querySelectorAll('.tab').forEach((t) => t.classList.toggle('active', t.dataset.view === v));
   $('layer-wrap').hidden = v !== 'layers';
   $('gizmo-bar').hidden = v !== 'design';
+  if (overlayGroup) overlayGroup.visible = v === 'design';
   orbit.enabled = v === 'design';
   blockView.controls.enabled = v === 'blocks';
   tc.enabled = v === 'design';
@@ -701,6 +895,7 @@ function initViews() {
     tc.setTranslationSnap(on ? 0.5 : null); tc.setRotationSnap(on ? 15 * DEG : null); tc.setScaleSnap(on ? 0.25 : null);
   };
   $('show-bounds').onchange = updateDims;
+  $('show-blocks').onchange = (e) => setOverlay(e.target.checked);
   $('btn-undo').onclick = undo;
   $('btn-redo').onclick = redo;
   $('btn-frame').onclick = frameDesign;
@@ -722,7 +917,10 @@ function initViews() {
 }
 
 function setGizmo(mode) {
+  const s = selected();
+  if (s && s.type === 'stamp' && mode === 'scale') mode = 'translate';
   tc.setMode(mode);
+  tc.showX = tc.showZ = !(s && s.type === 'stamp' && mode === 'rotate');
   tc.setSpace(mode === 'translate' ? 'world' : 'local');
   document.querySelectorAll('[data-gizmo]').forEach((b) => b.classList.toggle('active', b.dataset.gizmo === mode));
 }
@@ -753,7 +951,7 @@ function loop() {
 
 // ---------------------------------------------------------------- history & storage
 let history = [], hIndex = -1;
-const snapshot = () => JSON.stringify({ shapes, settings });
+const snapshot = () => JSON.stringify({ shapes, settings, stamps });
 
 function commit() {
   const s = snapshot();
@@ -771,6 +969,8 @@ function commit() {
 function restore(json) {
   const d = JSON.parse(json);
   shapes = d.shapes; settings = { ...defaultSettings(), ...d.settings };
+  stamps = d.stamps || [];
+  renderStampList();
   nextId = shapes.reduce((m, s) => Math.max(m, s.id), 0) + 1;
   rebuildMeshes(); applySettingsUI(); renderShapeList(); fillProps(); updateDims();
   save(); scheduleConvert();
@@ -779,7 +979,7 @@ function undo() { if (hIndex > 0) { hIndex--; restore(history[hIndex]); } }
 function redo() { if (hIndex < history.length - 1) { hIndex++; restore(history[hIndex]); } }
 
 function save() {
-  try { localStorage.setItem(STORAGE_KEY, JSON.stringify({ version: 1, shapes, settings, built: [...built] })); } catch { /* storage unavailable */ }
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify({ version: 2, shapes, settings, stamps, built: [...built] })); } catch { /* storage unavailable */ }
 }
 
 function loadProject(d) {
@@ -787,6 +987,7 @@ function loadProject(d) {
   shapes = d.shapes.map((s) => ({ visible: true, mode: 'add', material: 'stone', rotation: [0, 0, 0], repeat: defaultRepeat(), ...s, params: { ...defaultParams(s.type), ...(s.params || {}) } }));
   settings = { ...defaultSettings(), ...(d.settings || {}) };
   built = new Set(d.built || []);
+  stamps = Array.isArray(d.stamps) ? d.stamps : [];
   nextId = shapes.reduce((m, s) => Math.max(m, s.id || 0), 0) + 1;
   shapes.forEach((s) => { if (!s.id) s.id = nextId++; });
   selectedId = null;
@@ -799,13 +1000,13 @@ function initFile() {
     shapes = []; settings = defaultSettings(); built = new Set(); selectedId = null; nextId = 1; lastDims = null;
     rebuildMeshes(); applySettingsUI(); renderShapeList(); fillProps(); setVoxels(null); commit();
   };
-  $('btn-save').onclick = () => download('shape-layers-project.json', JSON.stringify({ version: 1, shapes, settings, built: [...built] }, null, 2), 'application/json');
+  $('btn-save').onclick = () => download('shape-layers-project.json', JSON.stringify({ version: 2, shapes, settings, stamps, built: [...built] }, null, 2), 'application/json');
   $('btn-open').onclick = () => $('file-input').click();
   $('file-input').onchange = async (e) => {
     const f = e.target.files[0]; if (!f) return;
     try {
       loadProject(JSON.parse(await f.text()));
-      rebuildMeshes(); applySettingsUI(); renderShapeList(); fillProps(); commit(); frameDesign();
+      rebuildMeshes(); applySettingsUI(); renderShapeList(); renderStampList(); fillProps(); commit(); frameDesign();
     } catch (err) { alert('Could not open file: ' + err.message); }
     e.target.value = '';
   };
@@ -886,6 +1087,85 @@ function openLayerSheet() {
   w.document.close();
 }
 
+// ---------------------------------------------------------------- stamps
+let stampEditor = null;
+
+function renderStampList() {
+  const ul = $('stamp-list');
+  if (!ul) return;
+  ul.innerHTML = '';
+  if (!stamps.length) { ul.innerHTML = '<li class="empty">No stamps yet. Start from the pillar template or a blank grid.</li>'; }
+  for (const st of stamps) {
+    const li = document.createElement('li');
+    li.innerHTML = `<span class="nm"></span><small>${st.size.join('×')}</small>
+      <button class="icon-btn" data-act="place" title="Place in the scene">＋</button>
+      <button class="icon-btn" data-act="edit" title="Edit blocks">✎</button>
+      <button class="icon-btn" data-act="del" title="Delete stamp">✕</button>`;
+    li.querySelector('.nm').textContent = st.name;
+    li.onclick = (e) => {
+      const act = e.target.dataset && e.target.dataset.act;
+      if (act === 'place') placeStamp(st.id);
+      else if (act === 'edit') editStamp(st.id);
+      else if (act === 'del') deleteStamp(st.id);
+    };
+    ul.appendChild(li);
+  }
+  // keep the hall builder's pillar choice in sync
+  const sel = $('hall-form') && $('hall-form').elements.pillarStyle;
+  if (sel) {
+    const cur = sel.value;
+    sel.innerHTML = '<option value="box">Simple box</option>' + stamps.map((t) => `<option value="${t.id}"></option>`).join('');
+    stamps.forEach((t, i) => { sel.options[i + 1].textContent = `Stamp: ${t.name}`; });
+    sel.value = [...sel.options].some((o) => o.value === cur) ? cur : 'box';
+  }
+}
+
+function placeStamp(stampId, over = {}) {
+  const st = stampById(stampId);
+  if (!st) return null;
+  const s = {
+    id: nextId++, type: 'stamp', stampId, name: st.name, mode: 'add', material: 'stone', visible: true,
+    position: [Math.round(orbit.target.x), 0, Math.round(orbit.target.z)], rotation: [0, 0, 0], scale: [1, 1, 1],
+    params: {}, repeat: defaultRepeat(), ...over,
+  };
+  shapes.push(s);
+  buildMesh(s);
+  if (!over.silent) { select(s.id); commit(); }
+  return s;
+}
+
+function editStamp(stampId) {
+  stampEditor.open(stampById(stampId) || newStamp());
+}
+
+function deleteStamp(stampId) {
+  const used = shapes.filter((s) => s.stampId === stampId).length;
+  if (!confirm(used ? `Delete this stamp and its ${used} placement(s)?` : 'Delete this stamp?')) return;
+  stamps = stamps.filter((t) => t.id !== stampId);
+  shapes = shapes.filter((s) => s.stampId !== stampId);
+  rebuildMeshes(); renderShapeList(); renderStampList(); fillProps(); commit();
+}
+
+function onStampSaved(st) {
+  const i = stamps.findIndex((t) => t.id === st.id);
+  if (i >= 0) stamps[i] = st; else stamps.push(st);
+  for (const s of shapes) if (s.stampId === st.id) { s.name = st.name; syncMesh(s); }
+  renderStampList(); renderShapeList(); fillProps(); commit();
+}
+
+function initStamps() {
+  stampEditor = new StampEditor(onStampSaved);
+  $('btn-stamp-new').onclick = () => stampEditor.open(newStamp('New stamp', [3, 6, 3]));
+  $('btn-stamp-pillar').onclick = () => stampEditor.open(pillarTemplate(9, 'spruce'));
+  $('btn-stamp-import').onclick = () => $('stamp-file').click();
+  $('stamp-file').onchange = async (e) => {
+    const f = e.target.files[0]; if (!f) return;
+    try { stampEditor.open(await stampFromFile(f)); } catch (err) { alert('Could not import: ' + err.message); }
+    e.target.value = '';
+  };
+  renderStampList();
+}
+
 // ---------------------------------------------------------------- hall builder
 // Pillars across the hall (repeated along its length) + a vault resting on the outer pillars.
 function initHall() {
@@ -907,6 +1187,10 @@ function initHall() {
       `${across} × ${along} pillars · roof ${span + 2 * num('overhang')} wide, peak at y ${num('height') + num('rise')}`;
   };
   form.addEventListener('input', summary);
+  form.elements.pillarStyle.addEventListener('change', () => {
+    const st = stampById(form.elements.pillarStyle.value);
+    if (st) { form.elements.height.value = st.size[1]; form.elements.width.value = 1; summary(); }
+  });
   $('btn-hall').onclick = () => { summary(); dlg.showModal(); };
   dlg.addEventListener('close', () => {
     if (dlg.returnValue !== 'ok') return;
@@ -920,6 +1204,13 @@ function initHall() {
     const pillarIds = [];
     for (let i = 0; i < across; i++) {
       const x = -span / 2 + i * (w + gap) + w / 2;
+      const stampId = form.elements.pillarStyle.value;
+      if (stampById(stampId)) {
+        // stamp centered on the pillar's column
+        const p = placeStamp(stampId, { silent: true, name: `Pillar row ${i + 1}`, position: [x, 0, w / 2], repeat: { count: along, axis: 'z', spacing: every } });
+        pillarIds.push(p.id);
+        continue;
+      }
       const p = makeShape('box', {
         name: `Pillar row ${i + 1}`, material: form.elements.pillarMat.value,
         position: [x, height / 2, w / 2], scale: [w, height, w],
@@ -991,7 +1282,7 @@ function initKeys() {
   if (!loaded) defaultProject();
 
   renderShapeButtons();
-  initProps(); initSettings(); initLayers(); initViews(); initFile(); initKeys(); initHall();
+  initProps(); initSettings(); initLayers(); initViews(); initFile(); initKeys(); initHall(); initStamps();
   rebuildMeshes(); applySettingsUI(); renderShapeList(); fillProps();
   resize();
   commit();

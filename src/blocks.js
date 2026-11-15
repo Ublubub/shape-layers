@@ -43,7 +43,8 @@ export function blockIndex(id) {
 }
 
 // Voxel kinds stored in the grid
-export const AIR = 0, FULL = 1, BOTTOM = 2, TOP = 3, STAIR = 4;
+// CUSTOM = an exact block state placed by a stamp; meta indexes the grid's `custom` palette.
+export const AIR = 0, FULL = 1, BOTTOM = 2, TOP = 3, STAIR = 4, CUSTOM = 5;
 
 /**
  * Turn an octant mask (bit = x + 2*z + 4*y; x+ = east, z+ = south, y+ = up)
@@ -75,7 +76,8 @@ export function stairInfo(mask) {
   return { facing, half, shape: right ? 'inner_right' : 'inner_left' };
 }
 
-export function blockState(matIdx, kind, meta = 0) {
+export function blockState(matIdx, kind, meta = 0, custom = null) {
+  if (kind === CUSTOM) return custom[meta];
   const b = BLOCKS[matIdx] || BLOCKS[0];
   if (kind === FULL) return b.full;
   if (kind === STAIR && b.stairs) {

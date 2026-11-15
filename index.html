@@ -49,6 +49,16 @@
         <div class="shape-grid" id="shape-buttons"></div>
         <button id="btn-hall" class="wide" title="Generate pillars + a vaulted roof">🏛 Hall builder…</button>
       </section>
+      <section>
+        <h2>Stamps <span class="hint">exact block details</span></h2>
+        <div class="btn-row stamp-btns">
+          <button id="btn-stamp-pillar" title="Start from a pillar with a stair base, trapdoors and a capital">🏛 Pillar template</button>
+          <button id="btn-stamp-new" title="Blank stamp">＋ New</button>
+          <button id="btn-stamp-import" title="Import a .schem (WorldEdit) or .nbt (structure block) file">⇪ Import</button>
+        </div>
+        <ul class="shape-list stamp-list" id="stamp-list"></ul>
+        <input type="file" id="stamp-file" accept=".schem,.schematic,.nbt" hidden />
+      </section>
       <section class="grow">
         <h2>Shapes <span class="hint">top → bottom = order applied</span></h2>
         <ul class="shape-list" id="shape-list"></ul>
@@ -56,12 +66,13 @@
       <section id="props" hidden>
         <h2>Selected</h2>
         <label class="row"><span>Name</span><input id="p-name" type="text" /></label>
-        <label class="row"><span>Mode</span>
+        <div class="row stamp-only"><span>Stamp</span><span id="p-stamp-name" class="ellipsis"></span><button id="p-edit-stamp" type="button">Edit</button></div>
+        <label class="row no-stamp"><span>Mode</span>
           <select id="p-mode"><option value="add">Add (solid)</option><option value="sub">Carve (subtract)</option></select>
         </label>
-        <label class="row"><span>Block</span><select id="p-mat"></select></label>
+        <label class="row no-stamp"><span>Block</span><select id="p-mat"></select></label>
         <div class="vec"><span>Position</span><input data-vec="position" data-i="0" type="number" step="0.5" /><input data-vec="position" data-i="1" type="number" step="0.5" /><input data-vec="position" data-i="2" type="number" step="0.5" /></div>
-        <div class="vec"><span>Size</span><input data-vec="scale" data-i="0" type="number" step="0.5" min="0.05" /><input data-vec="scale" data-i="1" type="number" step="0.5" min="0.05" /><input data-vec="scale" data-i="2" type="number" step="0.5" min="0.05" /></div>
+        <div class="vec no-stamp"><span>Size</span><input data-vec="scale" data-i="0" type="number" step="0.5" min="0.05" /><input data-vec="scale" data-i="1" type="number" step="0.5" min="0.05" /><input data-vec="scale" data-i="2" type="number" step="0.5" min="0.05" /></div>
         <div class="vec"><span>Rotation°</span><input data-vec="rotation" data-i="0" type="number" step="15" /><input data-vec="rotation" data-i="1" type="number" step="15" /><input data-vec="rotation" data-i="2" type="number" step="15" /></div>
         <div class="vec-labels"><span></span><span>x</span><span>y</span><span>z</span></div>
         <div id="p-params"></div>
@@ -73,7 +84,7 @@
         </div>
         <div class="btn-row">
           <button id="p-dup" title="Ctrl+D">Duplicate</button>
-          <button id="p-mirror" title="Duplicate mirrored across X">Mirror X</button>
+          <button id="p-mirror" class="no-stamp" title="Duplicate mirrored across X">Mirror X</button>
           <button id="p-del" class="danger" title="Delete">Delete</button>
         </div>
       </section>
@@ -117,6 +128,7 @@
         <button id="btn-redo" title="Ctrl+Y">↷</button>
         <button id="btn-frame" title="Frame (F)">⌖</button>
         <label class="chk" title="Show block bounds in Design view"><input type="checkbox" id="show-bounds" checked /> Bounds</label>
+        <label class="chk" title="Draw the converted blocks over the shapes"><input type="checkbox" id="show-blocks" /> Show blocks</label>
       </div>
       <div class="progress" id="progress" hidden><div></div></div>
       <div class="help" id="help">Left-drag orbit · Right-drag pan · Wheel zoom · Click a shape to select</div>
@@ -187,6 +199,7 @@
           <label>Pillar height <input name="height" type="number" min="1" max="200" value="8" /></label>
           <label>Hall length <input name="hallLength" type="number" min="1" max="500" value="31" /></label>
           <label>Pillar every (along length) <input name="every" type="number" min="1" max="100" value="6" /></label>
+          <label>Pillar style <select name="pillarStyle"><option value="box">Simple box</option></select></label>
           <label>Material <select name="pillarMat"></select></label>
         </fieldset>
         <fieldset>
@@ -206,6 +219,52 @@
         <button value="ok" class="primary">Build hall</button>
       </div>
     </form>
+  </dialog>
+
+  <dialog id="stamp-dialog" class="stamp-dialog">
+    <div class="se-head">
+      <input id="se-name" type="text" placeholder="Stamp name" />
+      <span class="se-size">Size
+        <input id="se-w" type="number" min="1" max="64" /> ×
+        <input id="se-h" type="number" min="1" max="64" /> ×
+        <input id="se-d" type="number" min="1" max="64" />
+        <button id="se-resize" type="button">Apply</button>
+      </span>
+      <span class="muted">Click/drag paint · right-click or Shift erase · Alt-click pick · Ctrl+Z undo · ↑/↓ layer</span>
+    </div>
+    <div class="se-body">
+      <div class="se-palette">
+        <input id="se-search" type="search" placeholder="Search blocks (or type any id)…" />
+        <div id="se-blocks" class="se-blocks"></div>
+        <div class="se-current"><i id="se-swatch"></i><input id="se-state" type="text" spellcheck="false" title="Exact block state that will be painted, editable" /></div>
+        <div id="se-props" class="se-props"></div>
+      </div>
+      <div class="se-grid">
+        <div class="se-layer">
+          <button id="se-ldown" type="button">▼</button>
+          <input id="se-layer" type="range" min="0" max="0" value="0" />
+          <button id="se-lup" type="button">▲</button>
+          <output id="se-lout"></output>
+        </div>
+        <canvas id="se-canvas"></canvas>
+        <div class="se-hover muted" id="se-hover">&nbsp;</div>
+        <div class="se-tools">
+          <button id="se-fill" type="button">Fill layer</button>
+          <button id="se-clear" type="button">Clear layer</button>
+          <button id="se-copy" type="button">Copy layer below</button>
+          <button id="se-rotate" type="button">Rotate 90°</button>
+          <button id="se-undo" type="button">↶ Undo</button>
+        </div>
+      </div>
+      <div class="se-3d-wrap">
+        <canvas id="se-3d"></canvas>
+        <div class="muted" id="se-count"></div>
+      </div>
+    </div>
+    <div class="btn-row se-foot">
+      <button id="se-cancel" type="button">Cancel</button>
+      <button id="se-save" type="button" class="primary">Save stamp</button>
+    </div>
   </dialog>
 
   <script type="module" src="src/main.js"></script>
